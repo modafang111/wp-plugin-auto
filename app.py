@@ -658,32 +658,32 @@ def run_deliver_orders(settings: Settings, *, dry_run: bool, watch: bool, otp: s
     if dry_run:
         logger.info("DRY RUN: 購入者へは送らず、対象注文だけ確認します")
     db = Database(settings.db_path)
-        try:
-            mailer = Mailer(settings, logger)
-            service = OrderDeliveryService(settings, db, mailer, logger, otp=otp)
-            if watch:
-                try:
-                    service.watch(dry_run=dry_run)
-                except KeyboardInterrupt:
-                    logger.info("注文監視を終了します")
-                return 0
-            counts = service.run_once(dry_run=dry_run)
-            logger.info(
-                "お届け結果: orders=%s sent=%s skipped=%s failed=%s",
-                counts["orders"],
-                counts["sent"],
-                counts["skipped"],
-                counts["failed"],
-            )
-            return 1 if counts["failed"] else 0
-        except NeedsHumanReview as exc:
-            logger.error("要確認 (%s): %s", exc.stage, exc.message)
-            return 1
-        except PipelineError as exc:
-            logger.error("エラー (%s): %s", exc.stage, exc.message)
-            return 1
-        finally:
-            db.close()
+    try:
+        mailer = Mailer(settings, logger)
+        service = OrderDeliveryService(settings, db, mailer, logger, otp=otp)
+        if watch:
+            try:
+                service.watch(dry_run=dry_run)
+            except KeyboardInterrupt:
+                logger.info("注文監視を終了します")
+            return 0
+        counts = service.run_once(dry_run=dry_run)
+        logger.info(
+            "お届け結果: orders=%s sent=%s skipped=%s failed=%s",
+            counts["orders"],
+            counts["sent"],
+            counts["skipped"],
+            counts["failed"],
+        )
+        return 1 if counts["failed"] else 0
+    except NeedsHumanReview as exc:
+        logger.error("要確認 (%s): %s", exc.stage, exc.message)
+        return 1
+    except PipelineError as exc:
+        logger.error("エラー (%s): %s", exc.stage, exc.message)
+        return 1
+    finally:
+        db.close()
 
 
 def run_test_mail(settings: Settings) -> int:
