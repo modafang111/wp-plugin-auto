@@ -319,13 +319,76 @@ ZIP を商品に載せておくと、購入完了画面と購入者メールに�
 決済はクレジットカードと PAY ID あと払いのみ。複数のデジタル商品の同時購入は不可。
 
 このショップに App が入っていないあいだは、通常商品のまま売ります。
-その場合は次で、未対応の注文を見て日本語化ZIPを購入者へメールします。
+自動お届けはクラウドではなく、ショップオーナーの Windows PC で動かします。
+（BASE管理画面のログイン状態は PC ごとに保存されるため）
 
-     python app.py --deliver-orders --watch
+PCでの準備:
 
-Windows タスク スケジューラ例（5分おき）:
+  1) 最新コードを取る（このリポジトリの作業ブランチ）
 
-     schtasks /create /tn "base-wp-ja-auto-deliver" /sc minute /mo 5 /tr "D:\dev\base-wp-ja-auto\.venv\Scripts\python.exe D:\dev\base-wp-ja-auto\app.py --deliver-orders"
+       git fetch origin
+       git checkout cursor/base-wp-ja-auto-8d86
+       git pull origin cursor/base-wp-ja-auto-8d86
+
+  2) 依存関係
+
+       .venv\Scripts\activate
+       python -m pip install -r requirements.txt
+       python -m playwright install chromium
+
+  3) .env
+       CONTINUE_IF_ALREADY_TRANSLATED=false
+       PLAYWRIGHT_HEADLESS=true
+       REQUIRE_EMAIL=true  （本番）
+       SMTP と NOTIFY_EMAIL は --test-mail が通った設定のまま
+
+  4) このPCで BASE に1回ログインする（必須）
+       クラウドで保存した data\playwright\base_state.json は使えない。
+       初回だけ PLAYWRIGHT_HEADLESS=false にして画面を出す。
+
+       python app.py --deliver-orders --dry-run
+
+       メール認証番号を求められたら:
+
+       python app.py --deliver-orders --dry-run --otp 123456
+
+       成功後は data\playwright\base_state.json がこのPCにできる。
+       PLAYWRIGHT_HEADLESS=true に戻す。
+
+  5) お届けメールのテスト（自分宛て。購入者には送らない）
+
+       python app.py --test-deliver
+
+Windows タスク スケジューラ（推奨。--watch は使わない）:
+
+  --watch は終了しない常駐なので、タスク スケジューラ向きではない。
+  5分おきに deliver-orders.bat を1回ずつ実行する。
+
+  1) タスク スケジューラを開く
+  2) 「基本タスクの作成」
+  3) 名前: base-wp-ja-auto-deliver
+  4) トリガー: 毎日 → 繰り返し間隔 5分、期間 無期限
+     （詳細で「1日中繰り返す / 5分」でも可）
+  5) 操作: プログラムの開始
+       プログラム: D:\dev\base-wp-ja-auto\deliver-orders.bat
+       開始:       D:\dev\base-wp-ja-auto
+     （フォルダが違う場合は、そのフォルダの deliver-orders.bat を指定）
+  6) 「ユーザーがログオンしているときのみ実行する」
+     Playwright がブラウザを使うため、ログオンなし実行は失敗しやすい。
+  7) 「バッテリで開始する」「スリープ解除して実行」を必要ならオン。
+     PCがスリープしたままだと動かない。
+
+コマンド一発で作る場合:
+
+     schtasks /create /tn "base-wp-ja-auto-deliver" /sc minute /mo 5 /f /tr "D:\dev\base-wp-ja-auto\deliver-orders.bat"
+
+作成後は「タスクの実行」で1回試し、logs\ の最新ファイルを見る。
+「未対応の注文: 0 件」なら正常（売れていないだけ）。
+
+手動確認:
+
+     python app.py --deliver-orders --dry-run
+     python app.py --deliver-orders
 
 対象ZIPの対応づけ:
 
