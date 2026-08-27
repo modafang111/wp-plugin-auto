@@ -41,6 +41,10 @@ ALLOWED_HOST_SUFFIXES = (
     ".thebase.com",
     ".thebase.in",
     ".base.shop",
+    ".theshop.jp",
+    ".base.ec",
+    ".shopselect.net",
+    ".buyshop.jp",
     ".akamaized.net",
 )
 

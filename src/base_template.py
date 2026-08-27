@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as htmlmod
 import logging
 import re
 from dataclasses import asdict, dataclass, field
@@ -9,7 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from config import Settings
-from src.utils import read_json, write_json
+from src.utils import SafeHttp, read_json, write_json
 from src.wordpress import PluginInfo
 
 
@@ -69,6 +70,46 @@ class ProductTemplate:
         return asdict(self)
 
 
+def normalize_shop_fields(settings: Settings) -> dict[str, str]:
+    """Recover item URL / ID / shop URL even if the three .env values were swapped."""
+    blobs = [
+        settings.base_template_product_url,
+        settings.base_template_product_id,
+        settings.shop_public_base_url,
+    ]
+    product_url = ""
+    item_id = ""
+    shop_url = ""
+    for blob in blobs:
+        text = (blob or "").strip()
+        if not text:
+            continue
+        match = re.search(r"(https?://[^/\s]+)/items/(\d+)/?", text)
+        if match:
+            shop_url = shop_url or match.group(1)
+            item_id = item_id or match.group(2)
+            product_url = product_url or f"{match.group(1)}/items/{match.group(2)}"
+            continue
+        parsed = urlparse(text)
+        if parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.path.strip("/"):
+            shop_url = shop_url or f"{parsed.scheme}://{parsed.netloc}"
+            continue
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            shop_url = shop_url or f"{parsed.scheme}://{parsed.netloc}"
+            continue
+        if text.isdigit():
+            item_id = item_id or text
+    if not product_url and shop_url and item_id:
+        product_url = f"{shop_url}/items/{item_id}"
+    if product_url:
+        settings.base_template_product_url = product_url
+    if item_id:
+        settings.base_template_product_id = item_id
+    if shop_url:
+        settings.shop_public_base_url = shop_url
+    return {"product_url": product_url, "item_id": item_id, "shop_url": shop_url}
+
+
 class BaseTemplateService:
     def __init__(self, settings: Settings, logger: logging.Logger, client: Any | None = None) -> None:
         self.settings = settings
@@ -76,6 +117,14 @@ class BaseTemplateService:
         self.client = client
 
     def load(self) -> ProductTemplate:
+        fixed = normalize_shop_fields(self.settings)
+        if fixed.get("item_id") or fixed.get("product_url"):
+            self.logger.info(
+                "テンプレート商品を正規化: id=%s url=%s shop=%s",
+                fixed.get("item_id"),
+                fixed.get("product_url"),
+                fixed.get("shop_url"),
+            )
         cached = read_json(self.settings.template_cache_path, None)
         template = ProductTemplate()
         template.name_pattern = self.settings.product_name_pattern
@@ -94,7 +143,7 @@ class BaseTemplateService:
             except ValueError:
                 pass
 
-        remote = None
+        filled = False
         item_id = self._template_item_id()
         if item_id and self.client and self.client.can_read:
             self.logger.info("BASEテンプレート商品の情報を取得: item_id=%s", item_id)
@@ -124,7 +173,24 @@ class BaseTemplateService:
                     if str(row.get("category_id") or "").isdigit()
                 ]
                 write_json(self.settings.template_cache_path, template.to_dict())
-        elif isinstance(cached, dict) and cached.get("title"):
+                filled = True
+
+        if not filled:
+            public = self._fetch_public_product(self.settings.base_template_product_url)
+            if public:
+                self.logger.info("BASEテンプレート: 公開商品ページから取得しました")
+                template.source = "public_page"
+                template.item_id = str(public.get("item_id") or item_id or "")
+                template.title = public.get("title") or ""
+                template.detail = public.get("detail") or ""
+                if public.get("price"):
+                    template.price = int(public["price"])
+                if public.get("image_url"):
+                    template.image_urls = [str(public["image_url"])]
+                write_json(self.settings.template_cache_path, template.to_dict())
+                filled = True
+
+        if not filled and isinstance(cached, dict) and cached.get("title"):
             self.logger.info("BASEテンプレート: キャッシュ data/base_template.json を使用します")
             template.source = "cache"
             template.item_id = str(cached.get("item_id") or "")
@@ -139,12 +205,20 @@ class BaseTemplateService:
             template.image_urls = list(cached.get("image_urls") or [])
             if cached.get("name_pattern"):
                 template.name_pattern = str(cached["name_pattern"])
-        else:
+            filled = True
+
+        if not filled:
             self.logger.warning(
-                "BASEテンプレート商品をAPI取得できません。PRODUCT_NAME_PATTERN 等のデフォルトを使います。"
-                " 取得後は data/base_template.json にキャッシュされます。"
+                "BASEテンプレート商品をAPI/公開ページから取得できません。"
+                " PRODUCT_NAME_PATTERN 等のデフォルトを使います。"
             )
             template.source = "defaults"
+
+        if template.title and not self.settings.base_template_plugin_name:
+            for suffix in ("の日本語化ファイル", " WordPressプラグイン 日本語化ファイル"):
+                if template.title.endswith(suffix):
+                    self.settings.base_template_plugin_name = template.title[: -len(suffix)].strip()
+                    break
 
         template.name_pattern = self._infer_name_pattern(template) or template.name_pattern
         if not template.price:
@@ -231,11 +305,63 @@ class BaseTemplateService:
         if title and old_name and old_name in title:
             return title.replace(old_name, "{plugin_name}")
         if title:
-            # If the template title already looks like a generic pattern, keep suffix.
+            for suffix in ("の日本語化ファイル", " WordPressプラグイン 日本語化ファイル"):
+                if title.endswith(suffix):
+                    return "{plugin_name}" + suffix
             match = re.match(r"^(.+?)(\s*WordPressプラグイン.*)$", title)
             if match:
                 return "{plugin_name}" + match.group(2)
         return self.settings.product_name_pattern
+
+    def _fetch_public_product(self, url: str) -> dict[str, Any] | None:
+        url = (url or "").strip()
+        if not url.startswith("http"):
+            return None
+        host = urlparse(url).hostname or ""
+        try:
+            http = SafeHttp(timeout=self.settings.http_timeout_seconds, extra_hosts={host} if host else None)
+            response = http.request("GET", url, allow_hosts={host} if host else None, allow_redirects=True)
+            response.raise_for_status()
+            body = response.text
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("公開商品ページの取得に失敗しました: %s", type(exc).__name__)
+            return None
+
+        def meta(prop: str) -> str:
+            pattern = (
+                rf'<meta[^>]+(?:property|name)=["\']{re.escape(prop)}["\'][^>]+content=["\']([^"\']*)["\']'
+                rf'|<meta[^>]+content=["\']([^"\']*)["\'][^>]+(?:property|name)=["\']{re.escape(prop)}["\']'
+            )
+            match = re.search(pattern, body, re.I)
+            if not match:
+                return ""
+            return htmlmod.unescape((match.group(1) or match.group(2) or "")).strip()
+
+        title = meta("og:title").split("|")[0].strip()
+        detail = meta("og:description") or meta("description")
+        price_raw = meta("product:price:amount")
+        image_url = meta("og:image")
+        canonical = meta("og:url") or url
+        item_id = ""
+        found = re.search(r"/items/(\d+)", canonical)
+        if found:
+            item_id = found.group(1)
+        if not title:
+            return None
+        price = 0
+        if price_raw:
+            try:
+                price = int(float(price_raw))
+            except ValueError:
+                price = 0
+        return {
+            "title": title,
+            "detail": detail,
+            "price": price,
+            "image_url": image_url.split("?")[0] if image_url else "",
+            "item_id": item_id,
+            "canonical": canonical,
+        }
 
     def _template_item_id(self) -> str:
         if self.settings.base_template_product_id:

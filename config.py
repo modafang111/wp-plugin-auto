@@ -202,7 +202,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         base_category_id=env("BASE_CATEGORY_ID"),
         shop_public_base_url=env("SHOP_PUBLIC_BASE_URL"),
         sale_package_mode=env("SALE_PACKAGE_MODE", "translation_only").lower() or "translation_only",
-        openai_api_key=env("OPENAI_API_KEY"),
+        openai_api_key=env("OPENAI_API_KEY") or env("AI_API_KEY"),
         openai_model=env("OPENAI_MODEL", "gpt-4o-mini"),
         translation_provider=env("TRANSLATION_PROVIDER", "openai").lower() or "openai",
         translation_batch_size=_as_int(env("TRANSLATION_BATCH_SIZE"), 25),

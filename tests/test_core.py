@@ -3,6 +3,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from config import Settings, load_settings
+from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
 from src.plugin_analyzer import extract_php_strings
 from src.utils import extract_plugin_slug, placeholder_tokens, safe_extract_zip
@@ -50,6 +52,18 @@ class CoreTests(unittest.TestCase):
             dest.mkdir()
             with self.assertRaises(PipelineError):
                 safe_extract_zip(zip_path, dest, max_files=10, max_uncompressed=10000)
+
+    def test_swapped_shop_fields_are_normalized(self) -> None:
+        settings = load_settings(overrides={
+            "BASE_TEMPLATE_PRODUCT_URL": "https://123789.theshop.jp/",
+            "BASE_TEMPLATE_PRODUCT_ID": "https://123789.theshop.jp/items/55749997",
+            "SHOP_PUBLIC_BASE_URL": "55749997",
+        })
+        fixed = normalize_shop_fields(settings)
+        self.assertEqual(fixed["item_id"], "55749997")
+        self.assertEqual(fixed["shop_url"], "https://123789.theshop.jp")
+        self.assertEqual(fixed["product_url"], "https://123789.theshop.jp/items/55749997")
+        self.assertEqual(settings.base_template_product_id, "55749997")
 
 
 if __name__ == "__main__":
