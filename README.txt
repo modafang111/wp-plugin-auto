@@ -112,7 +112,11 @@ BASE登録のみ（翻訳成果物がある前提）:
 
      python app.py --test-mail
 
-非公開のテスト商品を1件だけ実登録（.env の DRY_RUN=true でも実行する）:
+非公開で実登録（.env の DRY_RUN=true のまま、1件だけ下書き登録）:
+
+     python app.py --register-draft "https://wordpress.org/plugins/classic-editor/"
+
+非公開の接続テスト商品（Hello Dolly 固定）:
 
      python app.py --test-base
 

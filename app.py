@@ -63,9 +63,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="非公開のテスト商品を1件だけ実登録する（DRY_RUN を無視。テンプレートは変更しない）",
     )
     parser.add_argument(
+        "--register-draft",
+        action="store_true",
+        help="DRY_RUN を無視し、非公開のまま BASE へ実登録する（テンプレートは変更しない）",
+    )
+    parser.add_argument(
         "--otp",
         default="",
-        help="BASEのメール認証番号（6桁）。--test-base または実登録時のみ。ログには残さない",
+        help="BASEのメール認証番号（6桁）。実登録時のみ。ログには残さない",
     )
     return parser.parse_args(argv)
 
@@ -75,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     overrides = {}
     if args.dry_run:
         overrides["DRY_RUN"] = "true"
+    if args.register_draft:
+        overrides["DRY_RUN"] = "false"
+        overrides["BASE_PUBLISH_MODE"] = "draft"
     settings = load_settings(overrides=overrides)
     settings.ensure_directories()
     load_extra_glossary(settings.data_dir / "templates" / "glossary.json")

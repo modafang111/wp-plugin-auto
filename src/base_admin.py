@@ -2,14 +2,14 @@
 
 Confirmed live on 2026-08-27:
 - Login: https://admin.thebase.com/users/login
-- After password, a new environment hits
+- New environments hit email OTP at
   https://admin.thebase.com/users/verify_two_factor_auth_via_mail
-  (heading「認証番号の入力」, label「認証番号」). This is not bypassed.
-- Digital items are created from 商品管理 → 商品を登録する → デジタルコンテンツ.
-  Official API cannot upload the digital file.
+- This shop's installed Apps do not include「デジタルコンテンツ販売」.
+  New items are created as 通常商品 at /shop_admin/items/add (非公開).
+- Existing JA listings are regular products (price 550, category 日本語翻訳ファイル).
 
-Template product is read-only. Clicks named 削除 / 更新する on the template
-item are refused.
+Template product is read-only. Clicks named 削除 / この商品を削除 / 更新する
+on the template item are refused.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ class BaseAdminClient:
             context_kwargs: dict[str, Any] = {
                 "locale": "ja-JP",
                 "timezone_id": "Asia/Tokyo",
-                "viewport": {"width": 1400, "height": 900},
+                "viewport": {"width": 1600, "height": 1100},
             }
             if state_path.exists():
                 context_kwargs["storage_state"] = str(state_path)
@@ -378,15 +378,41 @@ class BaseAdminClient:
         if cat.count():
             cat.first.click()
             self.logger.info("カテゴリ「日本語翻訳ファイル」を選択しました")
+        listing["image_uploaded"] = self._upload_product_image(page, listing)
         zip_input = _choose_zip_input(page)
         listing["file_uploaded"] = False
         if zip_input is None:
-            self.logger.warning("デジタルファイル欄が無いため ZIP は未添付で登録します（非公開）")
+            self.logger.warning(
+                "デジタルコンテンツ販売 App が未導入のため ZIP は未添付です。"
+                " 既存ショップと同じ通常商品（非公開）として登録します。"
+            )
         else:
             zip_input.set_input_files(str(zip_path))
             listing["file_uploaded"] = True
             page.wait_for_timeout(500)
         self._snapshot(page, screenshot_dir / "base-form-filled.png")
+
+    def _upload_product_image(self, page: Any, listing: dict[str, Any]) -> bool:
+        path = Path(listing.get("generated_image") or listing.get("image_path") or "")
+        if not path.exists() or path.stat().st_size < 32:
+            return False
+        inputs = page.locator("input[type=file]")
+        chosen = None
+        for i in range(inputs.count()):
+            el = inputs.nth(i)
+            accept = (el.get_attribute("accept") or "").lower()
+            if "zip" in accept:
+                continue
+            if "image" in accept or accept == "":
+                chosen = el
+                if "image" in accept:
+                    break
+        if chosen is None:
+            return False
+        chosen.set_input_files(str(path))
+        page.wait_for_timeout(800)
+        self.logger.info("商品画像を添付しました: %s", path.name)
+        return True
 
     def _set_unpublished(self, page: Any) -> None:
         label = page.locator("label.c-radio__label").filter(has_text=re.compile(r"^(非公開|未公開)$"))
@@ -455,6 +481,7 @@ class BaseAdminClient:
             "visible": 0,
             "method": "playwright_admin",
             "file_uploaded": bool(listing.get("file_uploaded")),
+            "image_uploaded": bool(listing.get("image_uploaded")),
         }
 
     def _auth_wall(self, page: Any) -> str:
