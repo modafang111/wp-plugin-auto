@@ -128,6 +128,9 @@ def keep_original(item: TranslatableString) -> bool:
         return True
     if len(text) <= 2 and not re.search(r"[A-Za-z]", text):
         return True
+    comment = (item.extracted_comment or "").lower()
+    if "plugin name of the plugin" in comment or "author of the plugin" in comment:
+        return True
     return False
 
 

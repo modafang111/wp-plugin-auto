@@ -15,7 +15,7 @@ import polib
 
 from src.exceptions import PipelineError
 from src.plugin_analyzer import TranslatableString, extract_strings, strings_to_jsonable
-from src.utils import html_tag_names, placeholder_tokens, write_json
+from src.utils import html_tag_names, looks_like_url, placeholder_tokens, write_json
 from src.wordpress import PluginInfo
 
 
@@ -240,6 +240,13 @@ class TranslationBuilder:
             if len(text) > max(len(item.msgid) * 4, len(item.msgid) + 120):
                 report.warnings.append(f"異常に長い翻訳: {item.msgid[:60]}")
             by_source[item.msgid].add(text)
+            if (
+                text.strip() == item.msgid.strip()
+                and not looks_like_url(item.msgid)
+                and re.search(r"[A-Za-z]{4,}", item.msgid)
+                and len(item.msgid) > 24
+            ):
+                report.warnings.append(f"原文のままの英訳: {item.msgid[:60]}")
         for msgid, variants in by_source.items():
             if len(variants) > 1:
                 report.warnings.append(f"同一原文で訳が異なる: {msgid[:60]}")

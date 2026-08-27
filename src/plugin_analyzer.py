@@ -266,6 +266,31 @@ def extract_strings(plugin_root: Path, text_domain: str) -> list[TranslatableStr
                 value = data.get(field)
                 if isinstance(value, str) and value.strip():
                     add(TranslatableString(msgid=value, references=[f"{rel}:{field}"]))
+
+    headers = parse_plugin_headers(plugin_root)
+    header_comments = {
+        "plugin_name": "Plugin Name of the plugin",
+        "plugin_uri": "Plugin URI of the plugin",
+        "description": "Description of the plugin",
+        "author": "Author of the plugin",
+        "author_uri": "Author URI of the plugin",
+    }
+    main_ref = headers.get("main_file") or "plugin.php"
+    try:
+        main_rel = str(Path(main_ref).resolve().relative_to(plugin_root.resolve())).replace("\\", "/")
+    except Exception:
+        main_rel = Path(main_ref).name
+    for key, comment in header_comments.items():
+        value = (headers.get(key) or "").strip()
+        if value:
+            add(
+                TranslatableString(
+                    msgid=value,
+                    references=[main_rel],
+                    extracted_comment=comment,
+                )
+            )
+
     items = [item for item in collected.values() if item.msgid.strip()]
     items.sort(key=lambda i: (i.references[:1], i.msgid))
     return items
