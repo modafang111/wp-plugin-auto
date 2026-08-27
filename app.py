@@ -19,7 +19,7 @@ from src.database import Database
 from src.exceptions import NeedsHumanReview, PipelineError, SkipPlugin
 from src.logger import log_exception, setup_logger
 from src.mailer import Mailer
-from src.order_delivery import OrderDeliveryService, pick_test_zip
+from src.order_delivery import OrderDeliveryService, ensure_test_zip
 from src.package_builder import PackageBuilder
 from src.plugin_analyzer import PluginAnalyzer
 from src.plugin_downloader import PluginDownloader
@@ -592,7 +592,7 @@ def run_test_base(settings: Settings, otp: str = "") -> int:
                 "log_path": str(log_path),
                 "screenshot_path": str(screenshot_dir),
                 "output_zip": str(zip_path),
-                "retry": "認証番号が届いたら python app.py --test-base --otp で続きを実行",
+                "retry": "認証番号が届いたら deliver-orders-dry-run.bat --otp で続きを実行",
             }
         )
         return 1
@@ -637,10 +637,8 @@ def run_update_image(settings: Settings, item_id: str, image: str | None, otp: s
 
 def run_test_deliver(settings: Settings) -> int:
     logger, _log_path = setup_logger(settings.logs_dir, slug="test-deliver", secrets=settings.secret_values())
-    zip_path = pick_test_zip(settings.output_dir)
-    if zip_path is None:
-        print("output に *-ja.zip がありません。先に翻訳ZIPを作ってください。", file=sys.stderr)
-        return 2
+    zip_path = ensure_test_zip(settings.output_dir)
+    logger.info("テスト添付: %s", zip_path.name)
     db = Database(settings.db_path)
     try:
         mailer = Mailer(settings, logger)

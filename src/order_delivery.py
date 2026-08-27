@@ -414,3 +414,21 @@ class OrderDeliveryService:
 def pick_test_zip(output_dir: Path) -> Path | None:
     zips = sorted(output_dir.glob("*-ja.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
     return zips[0] if zips else None
+
+
+def ensure_test_zip(output_dir: Path) -> Path:
+    """Use an existing sales ZIP, or write a tiny dummy *-ja.zip for SMTP tests."""
+    existing = pick_test_zip(output_dir)
+    if existing is not None:
+        return existing
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dest = output_dir / "delivery-test-ja.zip"
+    readme = (
+        "This is a mail-delivery test file for base-wp-ja-auto.\n"
+        "It is not a WordPress translation package.\n"
+    )
+    padding = ("x" * 2048).encode("ascii")
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("README.txt", readme)
+        zf.writestr("padding.txt", padding)
+    return dest

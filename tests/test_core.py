@@ -11,7 +11,7 @@ from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import decide_already_translated, extract_php_strings
-from src.order_delivery import is_safe_sales_zip, parse_order_plans, resolve_sales_zip
+from src.order_delivery import ensure_test_zip, is_safe_sales_zip, parse_order_plans, resolve_sales_zip
 from src.utils import extract_plugin_slug, placeholder_tokens, redact_email, safe_extract_zip
 
 
@@ -146,6 +146,9 @@ class CoreTests(unittest.TestCase):
             original = output / "original.zip"
             original.write_bytes(good.read_bytes())
             self.assertIn("販売用ZIP", is_safe_sales_zip(original, root, 20 * 1024 * 1024))
+            dummy = ensure_test_zip(output / "empty")
+            self.assertTrue(dummy.name.endswith("-ja.zip"))
+            self.assertEqual(is_safe_sales_zip(dummy, root, 20 * 1024 * 1024), "")
 
     def test_resolve_sales_zip_from_job_and_title(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
