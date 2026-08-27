@@ -251,6 +251,10 @@ def extract_strings(plugin_root: Path, text_domain: str) -> list[TranslatableStr
         elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
             if "node_modules" in path.parts or "vendor" in path.parts:
                 continue
+            if path.name.endswith(".min.js") or path.name.endswith(".min.ts"):
+                continue
+            if any(part in {"wp-admin", "wp-includes"} for part in path.parts):
+                continue
             try:
                 source = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
