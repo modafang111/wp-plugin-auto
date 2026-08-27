@@ -156,6 +156,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if discovered else 1
         urls = discovered
     if not urls:
+        logger, log_path = setup_logger(settings.logs_dir, slug="register", secrets=settings.secret_values())
+        message = "登録するプラグインが見つかりませんでした。URL指定か --discover が必要です。"
+        logger.error(message)
+        Mailer(settings, logger).error(
+            {
+                "plugin_name": "(未選択)",
+                "stage": "対象選択",
+                "error": message,
+                "log_path": str(log_path),
+                "retry": "python app.py --register --discover --limit 1",
+            }
+        )
         print(
             "プラグインURLを指定するか、--discover で WordPress.org から自動取得してください。",
             file=sys.stderr,

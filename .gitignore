@@ -34,6 +34,7 @@ data/base_tokens.json
 data/base_template.json
 data/playwright/
 data/sessions/
+data/*.xml
 input/discovered.txt
 
 # OS
@@ -41,6 +42,9 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 $RECYCLE.BIN/
+
+# Cloud Agent local worktrees
+.cursor-cloud-worktrees/
 
 # Editor
 .idea/

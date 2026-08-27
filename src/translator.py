@@ -13,7 +13,7 @@ from config import Settings
 from src.database import Database
 from src.exceptions import PipelineError
 from src.plugin_analyzer import TranslatableString
-from src.utils import looks_like_code, looks_like_url, placeholder_tokens, sha256_text
+from src.utils import looks_like_code, looks_like_url, placeholder_tokens, repair_placeholders, sha256_text
 
 
 GLOSSARY = {
@@ -109,6 +109,7 @@ SYSTEM_PROMPT = """あなたは WordPress 管理画面の日本語翻訳者で�
 必須ルール:
 - WordPress で一般的な用語を使う（Save=保存, Settings=設定, Delete=削除, Enable=有効化, Disable=無効化 など）。
 - プレースホルダーを絶対に壊さない。%s %d %1$s %2$s {0} {name} %(name)s はそのまま残す。
+- 「100%s」のように数字の直後の %s は、実行時に % を埋め込むためのプレースホルダーである。100% や 100％ に置き換えず、100%s のまま残す。
 - HTMLタグを壊さない。追加・削除しない。
 - URL は翻訳しない。
 - プラグイン名、商品名、会社名、作者名などの固有名詞は無理に日本語化しない。
@@ -155,12 +156,17 @@ class Translator(ABC):
                 continue
             cached = self.db.cache_get(sha256_text(item.msgid), item.msgctxt, self.name)
             if cached is not None:
-                results[index] = cached
+                repaired = repair_placeholders(item.msgid, cached)
+                if repaired != cached:
+                    self.db.cache_put(sha256_text(item.msgid), item.msgid, item.msgctxt, repaired, self.name)
+                    self.logger.info("キャッシュのプレースホルダーを修復: %s", item.msgid[:60])
+                results[index] = repaired
                 continue
             glossary = GLOSSARY.get(item.msgid) or GLOSSARY.get(item.msgid.strip())
             if glossary:
-                results[index] = glossary
-                self.db.cache_put(sha256_text(item.msgid), item.msgid, item.msgctxt, glossary, self.name)
+                repaired = repair_placeholders(item.msgid, glossary)
+                results[index] = repaired
+                self.db.cache_put(sha256_text(item.msgid), item.msgid, item.msgctxt, repaired, self.name)
                 continue
             pending.append((index, item))
 
@@ -170,7 +176,7 @@ class Translator(ABC):
             chunk = pending[offset : offset + batch_size]
             translated = self.translate_batch(chunk)
             for index, item in chunk:
-                text = translated.get(index, "")
+                text = repair_placeholders(item.msgid, translated.get(index, ""))
                 results[index] = text
                 if text:
                     self.db.cache_put(sha256_text(item.msgid), item.msgid, item.msgctxt, text, self.name)

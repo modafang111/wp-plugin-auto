@@ -12,7 +12,8 @@ from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
 from src.database import Database
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
-from src.plugin_analyzer import decide_already_translated, extract_php_strings
+from src.plugin_analyzer import TranslatableString, decide_already_translated, extract_php_strings
+from src.translation_builder import TranslationBuilder
 from src.plugin_discovery import discover_plugins, eligibility_reason, plugin_has_ja_pack
 from src.order_delivery import (
     ensure_test_zip,
@@ -21,7 +22,7 @@ from src.order_delivery import (
     parse_order_plans,
     resolve_sales_zip,
 )
-from src.utils import extract_plugin_slug, placeholder_tokens, redact_email, safe_extract_zip
+from src.utils import extract_plugin_slug, placeholder_tokens, redact_email, repair_placeholders, safe_extract_zip
 
 
 class CoreTests(unittest.TestCase):
@@ -55,6 +56,82 @@ class CoreTests(unittest.TestCase):
         self.assertIn("%1$s", tokens)
         self.assertIn("{name}", tokens)
         self.assertIn("%s", tokens)
+
+    def test_repair_percent_injection_placeholder(self) -> None:
+        src = (
+            "With Zip AI by your side, you can create beautiful, 100%s custom web pages "
+            "without the need for any design or coding skills."
+        )
+        dst = "Zip AI を使えば、デザインやコーディングのスキルがなくても、100%カスタムの美しいウェブページを作成できます。"
+        repaired = repair_placeholders(src, dst)
+        self.assertIn("100%s", repaired)
+        self.assertEqual(sorted(placeholder_tokens(src)), sorted(placeholder_tokens(repaired)))
+        self.assertEqual(
+            repaired,
+            "Zip AI を使えば、デザインやコーディングのスキルがなくても、100%sカスタムの美しいウェブページを作成できます。",
+        )
+
+    def test_repair_fullwidth_percent_injection(self) -> None:
+        src = "Save 100%s off"
+        dst = "100％オフ"
+        self.assertEqual(repair_placeholders(src, dst), "100%sオフ")
+
+    def test_repair_percent_word_and_escaped(self) -> None:
+        self.assertEqual(repair_placeholders("Save 50%s", "50パーセント"), "50%s")
+        self.assertEqual(repair_placeholders("Save 50%s", "50%%"), "50%s")
+        self.assertEqual(repair_placeholders("Save 50%s", "50 %"), "50%s")
+
+    def test_repair_numbered_percent_placeholder(self) -> None:
+        src = "Discount 100%1$s today"
+        dst = "本日100％引き"
+        self.assertEqual(repair_placeholders(src, dst), "本日100%1$s引き")
+
+    def test_repair_does_not_touch_unrelated_percent(self) -> None:
+        src = "Hello %s"
+        dst = "こんにちは %s（50%オフ）"
+        self.assertEqual(repair_placeholders(src, dst), dst)
+
+    def test_repair_leaves_matching_placeholders(self) -> None:
+        src = "Delete %s"
+        dst = "%sを削除"
+        self.assertEqual(repair_placeholders(src, dst), dst)
+
+    def test_quality_check_repairs_percent_injection(self) -> None:
+        src = (
+            "With Zip AI by your side, you can create beautiful, 100%s custom web pages "
+            "without the need for any design or coding skills."
+        )
+        dst = "Zip AI を使えば、デザインやコーディングのスキルがなくても、100%カスタムの美しいウェブページを作成できます。"
+        items = [TranslatableString(msgid=src)]
+        translations = [dst]
+        report = TranslationBuilder(logging.getLogger("test")).quality_check(items, translations)
+        self.assertTrue(report.ok, report.errors)
+        self.assertIn("100%s", translations[0])
+        self.assertTrue(any(w.startswith("プレースホルダーを自動修復") for w in report.warnings))
+
+    def test_write_catalog_saves_plural_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            dest = Path(raw) / "translation"
+            plugin_root = Path(raw) / "plugin"
+            plugin_root.mkdir()
+            info = SimpleNamespace(
+                name="Demo",
+                version="1.0",
+                official_url="https://wordpress.org/plugins/demo/",
+            )
+            items = [
+                TranslatableString(msgid="Save"),
+                TranslatableString(msgid="%s year", msgid_plural="%s years"),
+            ]
+            translations = ["保存", "%s年"]
+            catalog = TranslationBuilder(logging.getLogger("test")).write_catalog(
+                info, "demo", items, translations, dest, plugin_root
+            )
+            self.assertTrue(Path(catalog["po_path"]).exists())
+            self.assertTrue(Path(catalog["mo_path"]).exists())
+            po_text = Path(catalog["po_path"]).read_text(encoding="utf-8")
+            self.assertIn('msgid_plural "%s years"', po_text)
+            self.assertIn('msgstr[0] "%s年"', po_text)
 
     def test_zip_slip_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

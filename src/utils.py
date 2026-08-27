@@ -59,6 +59,13 @@ PLACEHOLDER_RE = re.compile(
     r"|\{[a-zA-Z_][a-zA-Z0-9_]*\}"
     r"|%\([a-zA-Z_][a-zA-Z0-9_]*\)s"
 )
+# msgid の「100%s」「100%1$s」など。WordPress は 100% を gettext に書けないため
+# sprintf でパーセント記号を埋め込む。
+_NUM_PERCENT_PLACEHOLDER_RE = re.compile(
+    r"(?P<num>[0-9０-９]+)(?P<ph>%(?:[0-9]+\$)?s)"
+)
+# 訳文側で同じ数字の直後に残った「ただの %」。sprintf トークンではないもの。
+_BROKEN_PERCENT_AFTER_NUM_RE = r"(?:％|%%|パーセント|%(?![sdifFouxXeEgGc%]|[0-9]+\$))"
 HTML_TAG_RE = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>")
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
@@ -263,6 +270,33 @@ def safe_extract_zip(
 
 def placeholder_tokens(text: str) -> list[str]:
     return [m.group(0) for m in PLACEHOLDER_RE.finditer(text or "")]
+
+
+def repair_placeholders(source: str, dest: str) -> str:
+    """Restore sprintf placeholders the translator dropped or 'corrected'.
+
+    WordPress strings often use ``100%s`` (runtime-injected ``%``) instead of
+    a literal ``100%``. Models rewrite that to ``100%`` / ``100％`` / ``100%%``
+    / ``100パーセント``. This restores the original token with regex only when
+    the msgid actually contains ``<digits>%s`` or ``<digits>%1$s``.
+    """
+    if not dest:
+        return dest
+    if sorted(placeholder_tokens(source)) == sorted(placeholder_tokens(dest)):
+        return dest
+    repaired = dest
+    for match in _NUM_PERCENT_PLACEHOLDER_RE.finditer(source or ""):
+        num = match.group("num")
+        ph = match.group("ph")
+        if re.search(rf"{re.escape(num)}{re.escape(ph)}", repaired):
+            continue
+        repaired, _n = re.subn(
+            rf"{re.escape(num)}\s*{_BROKEN_PERCENT_AFTER_NUM_RE}",
+            f"{num}{ph}",
+            repaired,
+            count=1,
+        )
+    return repaired
 
 
 def html_tag_names(text: str) -> list[str]:

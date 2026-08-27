@@ -15,7 +15,7 @@ import polib
 
 from src.exceptions import PipelineError
 from src.plugin_analyzer import TranslatableString, extract_strings, strings_to_jsonable
-from src.utils import html_tag_names, looks_like_url, placeholder_tokens, write_json
+from src.utils import html_tag_names, looks_like_url, placeholder_tokens, repair_placeholders, write_json
 from src.wordpress import PluginInfo
 
 
@@ -125,10 +125,10 @@ class TranslationBuilder:
         for item, translated in zip(items, translations):
             entry = polib.POEntry(
                 msgid=item.msgid,
-                msgstr=translated or "",
+                msgstr="" if item.msgid_plural else (translated or ""),
                 msgctxt=item.msgctxt or None,
                 msgid_plural=item.msgid_plural or None,
-                msgstr_plural=[translated or ""] if item.msgid_plural else None,
+                msgstr_plural={0: translated or ""} if item.msgid_plural else None,
                 occurrences=[tuple((ref.split(":") + [""])[:2]) for ref in item.references],
                 comment=item.extracted_comment or None,
             )
@@ -219,20 +219,27 @@ class TranslationBuilder:
             report.errors.append(f"原文数 {len(items)} と翻訳数 {len(translations)} が一致しません。")
             return report
         by_source: dict[str, set[str]] = defaultdict(set)
-        for item, translated in zip(items, translations):
+        for index, (item, translated) in enumerate(zip(items, translations)):
             text = translated if translated is not None else ""
             if not str(text).strip():
                 report.empty_count += 1
                 report.untranslated_count += 1
                 report.errors.append(f"空翻訳: {item.msgid[:80]}")
                 continue
+            repaired = repair_placeholders(item.msgid, text)
+            if repaired != text:
+                translations[index] = repaired
+                text = repaired
+                report.warnings.append(f"プレースホルダーを自動修復: {item.msgid[:60]}")
             report.translated_count += 1
             if "\ufffd" in text or re_mojibake(text):
                 report.errors.append(f"文字化けの可能性: {item.msgid[:60]}")
             src_ph = placeholder_tokens(item.msgid)
             dst_ph = placeholder_tokens(text)
             if sorted(src_ph) != sorted(dst_ph):
-                report.errors.append(f"プレースホルダー不一致: {item.msgid[:60]}")
+                report.errors.append(
+                    f"プレースホルダー不一致: {item.msgid[:60]} (src={src_ph} dst={dst_ph})"
+                )
             src_tags = html_tag_names(item.msgid)
             dst_tags = html_tag_names(text)
             if sorted(src_tags) != sorted(dst_tags):
