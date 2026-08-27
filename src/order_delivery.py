@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings
-from src.base_admin import ORDERS_LIST_URL, PENDING_ORDER_STATUSES, SKIP_ORDER_STATUSES, BaseAdminClient
+from src.base_admin import ORDERS_LIST_URL, SKIP_ORDER_STATUSES, BaseAdminClient
 from src.database import Database
 from src.exceptions import PipelineError
 from src.mailer import Mailer
@@ -260,13 +260,6 @@ class OrderDeliveryService:
             except Exception:
                 page.wait_for_timeout(1500)
             summaries = self.admin.list_order_summaries(page, statuses=["ordered"])
-            if not summaries:
-                summaries = [
-                    row
-                    for row in self.admin.list_order_summaries(page)
-                    if str(row.get("status") or "").lower() in PENDING_ORDER_STATUSES
-                    and self._within_lookback(row)
-                ]
             counts["orders"] = len(summaries)
             self.logger.info("未対応の注文: %s 件", len(summaries))
             for summary in summaries:
@@ -310,17 +303,6 @@ class OrderDeliveryService:
                     except PipelineError as exc:
                         self.logger.warning("対応済への更新に失敗: %s", exc.message)
         return counts
-
-    def _within_lookback(self, summary: dict[str, Any]) -> bool:
-        raw = str(summary.get("ordered") or "")
-        if not raw:
-            return True
-        try:
-            stamp = raw.replace("Z", "+00:00")
-            ordered_ts = time.mktime(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            return True
-        return ordered_ts >= time.time() - max(1, self.settings.delivery_lookback_days) * 86400
 
     def _handle_plan(self, plan: DeliveryPlan, *, dry_run: bool) -> str:
         if plan.skip_reason:

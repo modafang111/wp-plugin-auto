@@ -227,7 +227,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         require_email=_as_bool(env("REQUIRE_EMAIL"), False),
         delivery_mark_dispatched=_as_bool(env("DELIVERY_MARK_DISPATCHED"), True),
         delivery_poll_seconds=_as_int(env("DELIVERY_POLL_SECONDS"), 300),
-        delivery_lookback_days=_as_int(env("DELIVERY_LOOKBACK_DAYS"), 14),
+        delivery_lookback_days=_as_int(env("DELIVERY_LOOKBACK_DAYS"), 90),
         delivery_max_zip_bytes=_as_int(env("DELIVERY_MAX_ZIP_BYTES"), 20 * 1024 * 1024),
         max_zip_bytes=_as_int(env("MAX_ZIP_BYTES"), 50 * 1024 * 1024),
         max_uncompressed_bytes=_as_int(env("MAX_UNCOMPRESSED_BYTES"), 200 * 1024 * 1024),

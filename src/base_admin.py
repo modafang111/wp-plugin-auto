@@ -19,6 +19,7 @@ import logging
 import re
 import time
 from contextlib import contextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlparse
@@ -140,14 +141,16 @@ class BaseAdminClient:
                 browser.close()
 
     def list_order_summaries(self, page: Any, *, statuses: list[str] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        today = date.today()
+        start = today - timedelta(days=max(1, self.settings.delivery_lookback_days))
         payload = {
             "limit": limit,
             "page": 1,
             "words": "",
             "order_by": "ordered_desc",
-            "ordered_from": None,
-            "ordered_to": None,
-            "status": statuses or [],
+            "ordered_from": start.isoformat(),
+            "ordered_to": today.isoformat(),
+            "status": [],
             "payment": [],
             "order_property": [],
             "order_type": [],
@@ -155,7 +158,11 @@ class BaseAdminClient:
         }
         data = admin_fetch_json(page, "POST", "/shop_admin/api/orders/summary", payload)
         rows = data.get("order_summary") if isinstance(data, dict) else None
-        return list(rows or []) if isinstance(rows, list) else []
+        items = list(rows or []) if isinstance(rows, list) else []
+        if statuses:
+            wanted = {s.lower() for s in statuses}
+            items = [row for row in items if str(row.get("status") or "").lower() in wanted]
+        return items
 
     def get_order_detail(self, page: Any, unique_key: str, order_type: str = "order") -> dict[str, Any]:
         if not re.fullmatch(r"[A-Za-z0-9]+", unique_key or ""):
