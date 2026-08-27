@@ -74,6 +74,17 @@ WordPress.org 公式ディレクトリの無料プラグインを対象に、
 
 2. 実行方法
 -----------
+Windows では次のバッチをダブルクリックしてもよい。
+
+  setup.bat                     仮想環境・依存関係・Chromium
+  test-mail.bat                 自分宛てにメール設定テスト
+  test-deliver.bat              自分宛てにZIP付きお届けテスト
+  deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
+  deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
+  register-draft.bat URL        翻訳して非公開登録
+
+コマンド例:
+
 1件:
 
      python app.py "https://wordpress.org/plugins/contact-form-7/"
@@ -346,18 +357,18 @@ PCでの準備:
        クラウドで保存した data\playwright\base_state.json は使えない。
        初回だけ PLAYWRIGHT_HEADLESS=false にして画面を出す。
 
-       python app.py --deliver-orders --dry-run
+       deliver-orders-dry-run.bat
 
        メール認証番号を求められたら:
 
-       python app.py --deliver-orders --dry-run --otp 123456
+       deliver-orders-dry-run.bat --otp 123456
 
        成功後は data\playwright\base_state.json がこのPCにできる。
        PLAYWRIGHT_HEADLESS=true に戻す。
 
   5) お届けメールのテスト（自分宛て。購入者には送らない）
 
-       python app.py --test-deliver
+       test-deliver.bat
 
 Windows タスク スケジューラ（推奨。--watch は使わない）:
 
@@ -387,8 +398,8 @@ Windows タスク スケジューラ（推奨。--watch は使わない）:
 
 手動確認:
 
-     python app.py --deliver-orders --dry-run
-     python app.py --deliver-orders
+     deliver-orders-dry-run.bat
+     deliver-orders.bat
 
 対象ZIPの対応づけ:
 

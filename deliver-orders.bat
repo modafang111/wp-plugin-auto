@@ -1,13 +1,4 @@
 @echo off
-rem Task Scheduler から呼ぶ用。この bat と同じフォルダをカレントにする。
-setlocal
-cd /d "%~dp0"
-
-if exist ".venv\Scripts\python.exe" (
-  set "PY=.venv\Scripts\python.exe"
-) else (
-  set "PY=python"
-)
-
-"%PY%" app.py --deliver-orders
+rem タスク スケジューラ用。ウィンドウを開いたままにしない。
+call "%~dp0run-app.bat" --deliver-orders
 exit /b %ERRORLEVEL%
