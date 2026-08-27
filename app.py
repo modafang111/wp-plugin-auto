@@ -23,7 +23,7 @@ from src.order_delivery import OrderDeliveryService, ensure_test_zip
 from src.package_builder import PackageBuilder
 from src.plugin_analyzer import PluginAnalyzer
 from src.plugin_downloader import PluginDownloader
-from src.plugin_discovery import discover_plugins
+from src.plugin_discovery import discover_plugins, import_discovered_txt
 from src.translation_builder import TranslationBuilder, dump_strings
 from src.translator import get_translator, load_extra_glossary
 from src.utils import SafeHttp, extract_plugin_slug, official_plugin_url, read_json, write_json
@@ -151,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
 
     urls = collect_urls(args, settings)
     if args.discover and not urls:
-        discovered = run_discover(settings, limit=args.limit)
+        discovered = run_discover(settings, limit=args.limit, for_register=not args.discover_only)
         if args.discover_only:
             return 0 if discovered else 1
         urls = discovered
@@ -191,25 +191,69 @@ def collect_urls(args: argparse.Namespace, settings: Settings) -> list[str]:
     return urls
 
 
-def run_discover(settings: Settings, limit: int | None = None) -> list[str]:
+def run_discover(settings: Settings, limit: int | None = None, *, for_register: bool = False) -> list[str]:
     logger, log_path = setup_logger(settings.logs_dir, slug="discover", secrets=settings.secret_values())
     db = Database(settings.db_path)
     try:
         wp = WordPressClient(SafeHttp(timeout=settings.http_timeout_seconds))
         want = limit if limit is not None else settings.discover_limit
+        imported = import_discovered_txt(settings.input_dir / "discovered.txt", db)
+        if imported:
+            logger.info("前回の discovered.txt から %s 件をキューへ入れました（同じ一覧は出しません）", imported)
+
+        if for_register:
+            pending = [
+                row
+                for row in db.queued_plugins()
+                if row.get("url") and not db.slug_is_finished(str(row.get("slug") or ""))
+            ]
+            urls: list[str] = []
+            for row in pending:
+                slug = str(row.get("slug") or "")
+                version = str(row.get("version") or "")
+                pack = wp.japanese_language_pack(slug, version) if slug else None
+                if pack:
+                    logger.info("キューの %s は公式JAパックがあるためスキップします", slug)
+                    db.upsert_job(
+                        slug,
+                        version or "unknown",
+                        plugin_name=str(row.get("name") or slug),
+                        wordpress_url=str(row.get("url") or ""),
+                        status="skipped_already_translated",
+                        error_message="公式日本語 language pack が公開されています。",
+                    )
+                    continue
+                urls.append(str(row["url"]))
+                logger.info("キューから登録: %s %s", row.get("name") or slug, row.get("url"))
+                if len(urls) >= want:
+                    break
+            if urls:
+                return urls
+
         found = discover_plugins(wp, db, settings, logger, limit=want)
+        for item in found:
+            db.enqueue_discovered(
+                item.slug,
+                version=item.version,
+                name=item.name,
+                url=item.url,
+                active_installs=item.active_installs,
+            )
         lines = [
             f"{item.url}  # {item.name} {item.version} installs={item.active_installs if item.active_installs is not None else '?'}"
             for item in found
         ]
         out = settings.input_dir / "discovered.txt"
         header = [
-            "# WordPress.org から自動取得した、公式JAパックの無いプラグイン",
+            "# この実行で新しく見つけたプラグイン（前回出したものはキューに残し、繰り返しません）",
+            f"# 未登録キュー: {len([r for r in db.queued_plugins() if not db.slug_is_finished(str(r.get('slug') or ''))])} 件",
             f"# 取得日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "",
         ]
         out.write_text("\n".join(header + lines) + ("\n" if lines else ""), encoding="utf-8")
-        logger.info("候補を保存: %s (%s件) ログ=%s", out, len(found), log_path)
+        logger.info("新しい候補: %s件 保存=%s ログ=%s", len(found), out, log_path)
+        if for_register:
+            logger.info("register.bat は未登録キューの先頭から処理します。discover.bat を繰り返すと次の新規一覧になります。")
         for line in lines:
             print(line)
         return [item.url for item in found]

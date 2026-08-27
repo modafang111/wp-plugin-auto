@@ -85,7 +85,7 @@ Windows では次のバッチをダブルクリックしてもよい。
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
   register.bat                  次のプラグインを自動取得して公開登録
   register.bat URL              指定URLを翻訳して公開登録
-  discover.bat                  公式JAパックの無いプラグインを一覧するだけ
+  discover.bat                  次の未出プラグインを一覧する（繰り返すと次へ進む）
   register-draft.bat URL        翻訳して非公開登録
   register-task.bat             5分おきのタスク スケジューラ登録
 
@@ -199,7 +199,9 @@ URLを毎回指定しなくてもよい。WordPress.org 公式ディレクトリ
   - hello-dolly / akismet などは除外
 
 1回の register.bat は初期値で 1件だけ処理する（DISCOVER_LIMIT=1）。
-候補を先に見るだけなら discover.bat 。結果は input\discovered.txt。
+候補を先に見るだけなら discover.bat 。
+discover.bat を繰り返すと、前回出したプラグインは飛ばして次の新規を出す。
+register.bat は未登録キューの先頭から1件処理する。
 
 
 3. BASE（thebase.com）と公式APIの分担

@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from config import Settings
 from src.database import Database
 from src.plugin_analyzer import decide_already_translated
-from src.utils import official_plugin_url
+from src.utils import extract_plugin_slug, official_plugin_url
 from src.wordpress import WordPressClient
 
 
@@ -85,6 +87,32 @@ def eligibility_reason(plugin: dict[str, Any], *, min_installs: int, skip_slugs:
     return ""
 
 
+def clean_plugin_name(value: str) -> str:
+    return html.unescape(value or "").strip()
+
+
+def import_discovered_txt(path: Path, db: Database) -> int:
+    if not path.exists():
+        return 0
+    added = 0
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        url = line.split("#", 1)[0].strip()
+        if not url:
+            continue
+        try:
+            slug = extract_plugin_slug(url)
+        except Exception:
+            continue
+        before = len(db.queued_slugs())
+        db.enqueue_discovered(slug, url=official_plugin_url(slug))
+        if len(db.queued_slugs()) > before:
+            added += 1
+    return added
+
+
 def discover_plugins(
     wp: WordPressClient,
     db: Database,
@@ -93,17 +121,21 @@ def discover_plugins(
     *,
     limit: int,
     check_glotpress: bool = True,
+    check_translation_api: bool = True,
 ) -> list[DiscoveredPlugin]:
     want = max(1, min(int(limit), 20))
     skip = blocked_slugs(settings)
+    taken = skip | db.finished_slugs() | db.queued_slugs()
     found: list[DiscoveredPlugin] = []
     seen: set[str] = set()
     logger.info(
-        "プラグイン自動取得を開始: browse=%s limit=%s min_installs=%s max_pages=%s",
+        "プラグイン自動取得を開始: browse=%s limit=%s min_installs=%s max_pages=%s queued=%s finished=%s",
         settings.discover_browse,
         want,
         settings.discover_min_installs,
         settings.discover_max_pages,
+        len(db.queued_slugs()),
+        len(db.finished_slugs()),
     )
     for browse in browse_names(settings):
         if len(found) >= want:
@@ -121,6 +153,9 @@ def discover_plugins(
                 if not slug or slug in seen:
                     continue
                 seen.add(slug)
+                if slug in taken:
+                    skipped_other += 1
+                    continue
                 reason = eligibility_reason(
                     plugin,
                     min_installs=settings.discover_min_installs,
@@ -132,10 +167,12 @@ def discover_plugins(
                     else:
                         skipped_other += 1
                     continue
-                if version and db.is_finished(slug, version):
-                    skipped_other += 1
-                    logger.info("スキップ %s %s: このバージョンは処理済み", slug, version)
-                    continue
+                if check_translation_api:
+                    pack = wp.japanese_language_pack(slug, version)
+                    if pack:
+                        skipped_pack += 1
+                        logger.info("スキップ %s: 翻訳APIに公式JAパックがあります", slug)
+                        continue
                 if check_glotpress:
                     percent = wp.glotpress_ja_percent(slug)
                     already, already_reason = decide_already_translated(
@@ -150,12 +187,13 @@ def discover_plugins(
                 installs = plugin.get("active_installs") if isinstance(plugin.get("active_installs"), int) else None
                 candidate = DiscoveredPlugin(
                     slug=slug,
-                    name=str(plugin.get("name") or slug),
+                    name=clean_plugin_name(str(plugin.get("name") or slug)),
                     version=version,
                     url=official_plugin_url(slug),
                     active_installs=installs,
                 )
                 found.append(candidate)
+                taken.add(slug)
                 logger.info(
                     "候補 %s/%s: %s %s installs=%s %s",
                     len(found),
@@ -182,5 +220,5 @@ def discover_plugins(
                 break
             time.sleep(0.15)
     if not found:
-        logger.warning("条件に合うプラグインが見つかりませんでした。DISCOVER_MAX_PAGES を増やすか、min_installs を下げてください。")
+        logger.warning("新しい候補が見つかりませんでした。DISCOVER_MAX_PAGES を増やすか、min_installs を下げてください。")
     return found

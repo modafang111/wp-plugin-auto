@@ -88,6 +88,15 @@ CREATE TABLE IF NOT EXISTS deliveries (
     error_message TEXT,
     UNIQUE(unique_key, order_item_id)
 );
+
+CREATE TABLE IF NOT EXISTS discover_queue (
+    slug TEXT PRIMARY KEY,
+    version TEXT,
+    name TEXT,
+    url TEXT NOT NULL,
+    active_installs INTEGER,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -124,7 +133,57 @@ class Database:
 
     def is_finished(self, slug: str, version: str) -> bool:
         job = self.get_job(slug, version)
+        if job and job.get("status") in DONE_STATUSES:
+            return True
+        return self.slug_is_finished(slug)
+
+    def slug_is_finished(self, slug: str) -> bool:
+        job = self.latest_job(slug)
         return bool(job and job.get("status") in DONE_STATUSES)
+
+    def finished_slugs(self) -> set[str]:
+        rows = self.conn.execute(
+            f"""
+            SELECT DISTINCT plugin_slug FROM jobs
+            WHERE status IN ({",".join("?" for _ in DONE_STATUSES)})
+            """,
+            tuple(DONE_STATUSES),
+        ).fetchall()
+        return {str(row["plugin_slug"]) for row in rows if row["plugin_slug"]}
+
+    def queued_slugs(self) -> set[str]:
+        rows = self.conn.execute("SELECT slug FROM discover_queue").fetchall()
+        return {str(row["slug"]) for row in rows if row["slug"]}
+
+    def queued_plugins(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM discover_queue ORDER BY created_at ASC, slug ASC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def enqueue_discovered(
+        self,
+        slug: str,
+        *,
+        version: str = "",
+        name: str = "",
+        url: str = "",
+        active_installs: int | None = None,
+    ) -> None:
+        slug = (slug or "").strip().lower()
+        if not slug:
+            return
+        existing = self.conn.execute("SELECT slug FROM discover_queue WHERE slug = ?", (slug,)).fetchone()
+        if existing:
+            return
+        self.conn.execute(
+            """
+            INSERT INTO discover_queue (slug, version, name, url, active_installs, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (slug, version or "", name or slug, url or "", active_installs, _now()),
+        )
+        self.conn.commit()
 
     def successful_job(self, slug: str, version: str) -> dict[str, Any] | None:
         row = self.conn.execute(

@@ -258,6 +258,14 @@ class CoreTests(unittest.TestCase):
             "active_installs": 40000,
             "language_packs": [{"language": "en_GB"}],
         }
+        next_plugin = {
+            "name": "Temporary Login Without Password",
+            "slug": "temporary-login-without-password",
+            "version": "1.9.5",
+            "download_link": "https://downloads.wordpress.org/plugin/temporary-login-without-password.1.9.5.zip",
+            "active_installs": 20000,
+            "language_packs": [],
+        }
         self.assertTrue(plugin_has_ja_pack(packed))
         self.assertFalse(plugin_has_ja_pack(open_plugin))
         self.assertIn("language pack", eligibility_reason(packed, min_installs=1000, skip_slugs=set()))
@@ -266,10 +274,13 @@ class CoreTests(unittest.TestCase):
 
         class FakeWP:
             def query_plugins(self, **_kwargs):
-                return [packed, open_plugin], {"page": 1, "pages": 1}
+                return [packed, open_plugin, next_plugin], {"page": 1, "pages": 1}
 
             def glotpress_ja_percent(self, _slug):
                 return 0
+
+            def japanese_language_pack(self, *_args, **_kwargs):
+                return None
 
         with tempfile.TemporaryDirectory() as raw:
             db = Database(Path(raw) / "jobs.sqlite3")
@@ -289,20 +300,35 @@ class CoreTests(unittest.TestCase):
                 logging.getLogger("test"),
                 limit=1,
                 check_glotpress=False,
+                check_translation_api=False,
             )
             self.assertEqual(len(found), 1)
             self.assertEqual(found[0].slug, "white-label-cms")
             self.assertTrue(found[0].url.endswith("/white-label-cms/"))
-            db.upsert_job("white-label-cms", "2.2.9", status="completed")
-            again = discover_plugins(
+            db.enqueue_discovered(found[0].slug, version=found[0].version, name=found[0].name, url=found[0].url)
+            next_found = discover_plugins(
                 FakeWP(),
                 db,
                 settings,
                 logging.getLogger("test"),
                 limit=1,
                 check_glotpress=False,
+                check_translation_api=False,
             )
-            self.assertEqual(again, [])
+            self.assertEqual(len(next_found), 1)
+            self.assertEqual(next_found[0].slug, "temporary-login-without-password")
+            db.upsert_job("white-label-cms", "2.2.9", status="completed")
+            again = discover_plugins(
+                FakeWP(),
+                db,
+                settings,
+                logging.getLogger("test"),
+                limit=2,
+                check_glotpress=False,
+                check_translation_api=False,
+            )
+            slugs = {item.slug for item in again}
+            self.assertNotIn("white-label-cms", slugs)
             db.close()
 
         args = parse_args(["--register", "--discover"])
