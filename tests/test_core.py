@@ -10,7 +10,7 @@ from src.base_admin import forbidden_control_name, is_login_page, is_protected_i
 from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
-from src.plugin_analyzer import extract_php_strings
+from src.plugin_analyzer import decide_already_translated, extract_php_strings
 from src.utils import extract_plugin_slug, placeholder_tokens, safe_extract_zip
 
 
@@ -87,6 +87,32 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(is_protected_item_url("https://admin.thebase.com/shop_admin/items/add", "55749997"))
         self.assertTrue(forbidden_control_name("削除する"))
         self.assertFalse(forbidden_control_name("登録する"))
+
+    def test_official_language_pack_counts_as_already_translated(self) -> None:
+        already, reason = decide_already_translated(
+            official_ja_percent=83,
+            has_official_ja_pack=True,
+            skip_if_ja_percent=95,
+        )
+        self.assertTrue(already)
+        self.assertIn("language pack", reason)
+        self.assertIn("83%", reason)
+
+        already, reason = decide_already_translated(
+            official_ja_percent=0,
+            has_official_ja_pack=False,
+            skip_if_ja_percent=95,
+        )
+        self.assertFalse(already)
+        self.assertEqual(reason, "")
+
+        already, reason = decide_already_translated(
+            official_ja_percent=96,
+            has_official_ja_pack=False,
+            skip_if_ja_percent=95,
+        )
+        self.assertTrue(already)
+        self.assertIn("96%", reason)
 
     def test_product_image_overlay_is_english_ascii(self) -> None:
         self.assertTrue(IMAGE_KICKER.isascii())

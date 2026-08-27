@@ -89,6 +89,36 @@ class Analysis:
         return data
 
 
+def decide_already_translated(
+    *,
+    official_ja_percent: int | None,
+    has_official_ja_pack: bool,
+    skip_if_ja_percent: int,
+    bundled_ja_files: list[str] | None = None,
+) -> tuple[bool, str]:
+    """公式パックや完了率から「販売する意味が薄い」かを判定する。
+
+    日本語サイトでは WordPress が translate.wordpress.org の language pack を
+    自動ダウンロードする。パックがあるプラグインは、自作ファイルを入れる前から
+    日本語UIになる。
+    """
+    if has_official_ja_pack:
+        if official_ja_percent is not None:
+            return True, (
+                f"公式日本語 language pack が公開されています（約 {official_ja_percent}%）。"
+                "日本語サイトでは WordPress が自動適用するため、プラグインを入れるだけで日本語になります。"
+            )
+        return True, (
+            "公式日本語 language pack が公開されています。"
+            "日本語サイトでは WordPress が自動適用するため、プラグインを入れるだけで日本語になります。"
+        )
+    if official_ja_percent is not None and official_ja_percent >= skip_if_ja_percent:
+        return True, f"公式日本語翻訳が約 {official_ja_percent}% です。"
+    if bundled_ja_files and official_ja_percent is None:
+        return False, "プラグイン同梱の日本語ファイルがあります。公式完了率は未取得です。"
+    return False, ""
+
+
 def find_plugin_root(extract_dir: Path) -> Path:
     php_files = list(extract_dir.rglob("*.php"))
     if not php_files:
@@ -189,16 +219,12 @@ class PluginAnalyzer:
         license_name = headers.get("license") or info.license or ""
         ja_pack = self.wp.japanese_language_pack(info.slug, info.version, info.language_packs)
         percent = self.wp.glotpress_ja_percent(info.slug)
-        already = False
-        reason = ""
-        if percent is not None and percent >= skip_if_ja_percent:
-            already = True
-            reason = f"公式日本語翻訳が約 {percent}% です。"
-        elif ja_pack and percent is None:
-            already = True
-            reason = "公式日本語 language pack が公開されています。"
-        elif ja_files and percent is None:
-            reason = "プラグイン同梱の日本語ファイルがあります。公式完了率は未取得です。"
+        already, reason = decide_already_translated(
+            official_ja_percent=percent,
+            has_official_ja_pack=bool(ja_pack),
+            skip_if_ja_percent=skip_if_ja_percent,
+            bundled_ja_files=ja_files,
+        )
         self.logger.info(
             "日本語対応状況: percent=%s pack=%s bundled_ja=%s already=%s",
             percent,

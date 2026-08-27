@@ -230,7 +230,11 @@ Playwright:
 translate.wordpress.org の GlotPress API と
 api.wordpress.org/translations/plugins/1.0/ を使う。
 
-SKIP_IF_JA_PERCENT=95 以上なら自動登録しない。
+公式日本語 language pack が公開されているプラグインはスキップする。
+日本語サイトでは WordPress がパックを自動ダウンロードするため、
+プラグインを入れるだけで日本語UIになる（自作ファイルの効果が見えない）。
+
+パックが無くても SKIP_IF_JA_PERCENT=95 以上なら自動登録しない。
 「既に十分日本語化されている可能性があります」をログとメールに残す。
 CONTINUE_IF_ALREADY_TRANSLATED=true または --force で続行できる。
 
