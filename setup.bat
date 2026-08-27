@@ -1,37 +1,37 @@
 @echo off
-rem 初回または依存関係の更新。仮想環境・pip・Playwright Chromium。
+rem First-time setup: venv, pip, Playwright Chromium.
 setlocal
 cd /d "%~dp0"
 
 where python >nul 2>&1
 if errorlevel 1 (
-  echo Python が見つかりません。Python 3.10 以上をインストールしてください。
+  echo Python was not found. Install Python 3.10 or later.
   pause
   exit /b 1
 )
 
 if not exist ".venv\Scripts\python.exe" (
-  echo 仮想環境を作成します。
+  echo Creating venv...
   python -m venv .venv
   if errorlevel 1 (
-    echo venv の作成に失敗しました。
+    echo Failed to create venv.
     pause
     exit /b 1
   )
 )
 
-echo パッケージをインストールします。
+echo Installing packages...
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 (
-  echo pip install に失敗しました。
+  echo pip install failed.
   pause
   exit /b 1
 )
 
-echo Playwright の Chromium を入れます。
+echo Installing Playwright Chromium...
 ".venv\Scripts\python.exe" -m playwright install chromium
 if errorlevel 1 (
-  echo playwright install に失敗しました。
+  echo playwright install failed.
   pause
   exit /b 1
 )
@@ -39,10 +39,10 @@ if errorlevel 1 (
 if not exist ".env" (
   if exist ".env.example" (
     copy /y ".env.example" ".env" >nul
-    echo .env を作成しました。値を記入してください。
+    echo Created .env - fill in the values.
   )
 )
 
-echo セットアップ完了。
+echo Setup complete.
 pause
 exit /b 0

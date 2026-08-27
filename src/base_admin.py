@@ -400,7 +400,8 @@ class BaseAdminClient:
             "BASEログイン",
             "BASEがメール認証番号の入力を求めています（新しい環境からのログイン）。"
             " 認証の回避はしません。"
-            " 届いた6桁を次で渡してください: python app.py --test-base --otp 123456"
+            " 届いた6桁を次で渡してください:"
+            " deliver-orders-dry-run.bat --otp 123456"
             " （番号はログに書きません）",
         )
 
@@ -418,7 +419,7 @@ class BaseAdminClient:
             self._snapshot(page, screenshot_dir / "base-two-factor-invalid.png")
             raise NeedsHumanReview(
                 "BASEログイン",
-                "認証番号が一致しませんでした。番号は一度限りです。新しい番号で python app.py --test-base --otp を再実行してください。",
+                "認証番号が一致しませんでした。番号は一度限りです。新しい番号で deliver-orders-dry-run.bat --otp を再実行してください。",
             )
         wall = self._auth_wall(page)
         if wall and wall != "two_factor":

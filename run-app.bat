@@ -1,5 +1,5 @@
 @echo off
-rem 共通起動。このファイルと同じフォルダをカレントにする。
+rem Shared launcher. Always run from this folder.
 setlocal
 cd /d "%~dp0"
 

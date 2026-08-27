@@ -1,5 +1,5 @@
 @echo off
-rem SMTP / NOTIFY_EMAIL の送信テスト。
+rem SMTP / NOTIFY_EMAIL send test.
 call "%~dp0run-app.bat" --test-mail
 set "ERR=%ERRORLEVEL%"
 echo.

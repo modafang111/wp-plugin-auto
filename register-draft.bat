@@ -1,13 +1,12 @@
 @echo off
-rem プラグインを翻訳して BASE に非公開登録する。
-rem 使い方: register-draft.bat https://wordpress.org/plugins/スラッグ/
-rem 引数なしで起動すると URL を尋ねる。
+rem Translate a plugin and register it unpublished on BASE.
+rem Usage: register-draft.bat https://wordpress.org/plugins/slug/
 setlocal
 cd /d "%~dp0"
 set "URL=%~1"
-if "%URL%"=="" set /p URL=WordPressプラグインのURL: 
+if "%URL%"=="" set /p URL=WordPress plugin URL: 
 if "%URL%"=="" (
-  echo URLが空です。
+  echo URL is empty.
   pause
   exit /b 2
 )

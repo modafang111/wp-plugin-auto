@@ -1,4 +1,4 @@
 @echo off
-rem タスク スケジューラ用。ウィンドウを開いたままにしない。
+rem For Task Scheduler. Do not pause.
 call "%~dp0run-app.bat" --deliver-orders
 exit /b %ERRORLEVEL%
