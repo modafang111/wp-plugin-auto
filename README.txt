@@ -251,6 +251,41 @@ output には登録プレビューも出す。
   output\<slug>-<version>-preview.json
   output\<slug>-<version>-preview.txt
 
+商品画像の文字は英語のみ（Japanese Localization）。日本語フォントが無い環境で
+「日本語化」が □□□□ になるのを避けるため。
+
+
+7.1 .po / .mo の確認
+--------------------
+.po は人が読める翻訳テキスト。.mo は WordPress が読むバイナリです。
+
+場所（Classic Editor の例）:
+
+  work\classic-editor\1.7.0\translation\classic-editor-ja.po
+  work\classic-editor\1.7.0\translation\classic-editor-ja.mo
+
+販売ZIPの中にも同じファイルが入っています。
+
+  output\classic-editor-1.7.0-ja.zip
+    languages\classic-editor-ja.po
+    languages\classic-editor-ja.mo
+
+Windows での見方:
+
+1) いちばん簡単: Poedit（無料）で .po を開く。
+   左が英語（msgid）、右が日本語（msgstr）。保存すると .mo も更新できる。
+2) .po だけ読む: メモ帳 / VS Code / サクラエディタ。UTF-8。
+3) .mo を直接メモ帳で開くと文字化けする。Poedit か次で中身を出す。
+
+     python -c "import polib; p=polib.pofile(r'work\classic-editor\1.7.0\translation\classic-editor-ja.po'); print(len(p), 'strings'); print(p[5].msgid); print(p[5].msgstr)"
+
+WordPress に入れて確認する場合:
+
+  wp-content\languages\plugins\classic-editor-ja.po
+  wp-content\languages\plugins\classic-editor-ja.mo
+
+サイト言語を日本語にして、該当プラグインの画面を見る。
+
 
 8. ログと履歴
 -------------

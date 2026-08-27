@@ -72,6 +72,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="BASEのメール認証番号（6桁）。実登録時のみ。ログには残さない",
     )
+    parser.add_argument("--update-image", metavar="ITEM_ID", help="指定した BASE 商品の画像だけ差し替える（テンプレートは不可）")
+    parser.add_argument("--image", help="--update-image で使う PNG/JPG のパス")
     return parser.parse_args(argv)
 
 
@@ -93,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_test_mail(settings)
     if args.test_base:
         return run_test_base(settings, otp=args.otp)
+    if args.update_image:
+        return run_update_image(settings, args.update_image, args.image, otp=args.otp)
     if args.fetch_template:
         logger, log_path = setup_logger(settings.logs_dir, slug="template", secrets=settings.secret_values())
         logger.info("処理開始: テンプレート取得")
@@ -588,6 +592,30 @@ def run_test_base(settings: Settings, otp: str = "") -> int:
                 "retry": "python app.py --test-base",
             }
         )
+        return 1
+
+
+def run_update_image(settings: Settings, item_id: str, image: str | None, otp: str = "") -> int:
+    from src.base_admin import BaseAdminClient
+
+    secrets = list(settings.secret_values())
+    if otp:
+        secrets.append(otp)
+    logger, log_path = setup_logger(settings.logs_dir, slug="update-image", secrets=secrets)
+    path = Path(image) if image else None
+    if path is None or not path.exists():
+        logger.error("画像ファイルを --image で指定してください")
+        return 2
+    admin = BaseAdminClient(settings, logger, otp=otp)
+    try:
+        admin.replace_item_image(item_id.strip(), path, settings.screenshots_dir / f"update-image-{item_id}")
+        logger.info("画像を更新しました: item_id=%s path=%s log=%s", item_id, path, log_path)
+        return 0
+    except NeedsHumanReview as exc:
+        logger.error("要確認 (%s): %s", exc.stage, exc.message)
+        return 1
+    except PipelineError as exc:
+        logger.error("エラー (%s): %s", exc.stage, exc.message)
         return 1
 
 

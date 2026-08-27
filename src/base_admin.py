@@ -153,6 +153,62 @@ class BaseAdminClient:
                 context.close()
                 browser.close()
 
+    def replace_item_image(self, item_id: str, image_path: Path, screenshot_dir: Path) -> None:
+        template_id = str(self.settings.base_template_product_id or "")
+        if not item_id.isdigit():
+            raise PipelineError("BASE商品登録", "商品IDが不正です。")
+        if item_id == template_id:
+            raise PipelineError("BASE商品登録", "テンプレート商品の画像は変更しません。")
+        if not image_path.exists():
+            raise PipelineError("BASE商品登録", f"画像がありません: {image_path}")
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=self.settings.playwright_headless,
+                args=["--disable-dev-shm-usage"],
+            )
+            context = browser.new_context(
+                locale="ja-JP",
+                timezone_id="Asia/Tokyo",
+                viewport={"width": 1600, "height": 1100},
+                **({"storage_state": str(self.settings.playwright_state_path)} if self.settings.playwright_state_path.exists() else {}),
+            )
+            page = context.new_page()
+            try:
+                self._login_or_resume(page, context, screenshot_dir, _read_pending(self.settings))
+                edit_url = f"{ADMIN_ORIGIN}/shop_admin/items/edit/{item_id}"
+                page.goto(edit_url, wait_until="domcontentloaded", timeout=45000)
+                self._guard_template(page.url, template_id)
+                if str(item_id) not in page.url:
+                    raise PipelineError("BASE商品登録", f"指定した商品の編集画面ではありません: {page.url}")
+                listing = {"generated_image": str(image_path)}
+                if not self._upload_product_image(page, listing):
+                    raise NeedsHumanReview("BASE商品登録", "画像のファイル欄が見つかりません。")
+                save = _first_existing(
+                    page,
+                    [
+                        lambda: page.get_by_role("button", name="変更を保存", exact=True),
+                        lambda: page.get_by_role("button", name=re.compile(r"^変更を保存$")),
+                    ],
+                )
+                if save is None:
+                    raise NeedsHumanReview("BASE商品登録", "「変更を保存」が見つかりません。削除は押しません。")
+                self._safe_click(page, save, "変更を保存")
+                page.wait_for_timeout(2500)
+                self._guard_template(page.url, template_id)
+                self._snapshot(page, screenshot_dir / "base-image-updated.png")
+                self.logger.info("商品画像を更新しました: item_id=%s", item_id)
+                context.storage_state(path=str(self.settings.playwright_state_path))
+            except PlaywrightTimeout as exc:
+                self._snapshot(page, screenshot_dir / "base-image-timeout.png")
+                raise NeedsHumanReview("BASE商品登録", f"画像更新が時間切れです。 {exc}") from exc
+            finally:
+                context.close()
+                browser.close()
+
     def _login_or_resume(self, page: Any, context: Any, screenshot_dir: Path, pending: dict[str, Any]) -> None:
         state_path = self.settings.playwright_state_path
         if state_path.exists():

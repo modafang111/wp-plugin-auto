@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,16 @@ from PIL import Image, ImageDraw, ImageFont
 from config import Settings
 from src.utils import safe_filename, write_json
 from src.wordpress import PluginInfo
+
+
+IMAGE_KICKER = "Japanese Localization"
+IMAGE_SUBLINE = "WordPress Plugin"
+
+
+def ascii_overlay(text: str) -> str:
+    """Keep only Latin overlay text so missing CJK fonts cannot render as □."""
+    cleaned = "".join(ch if 32 <= ord(ch) < 127 else " " for ch in (text or ""))
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 README_TEMPLATE = """{plugin_name} 日本語化ファイル
@@ -152,26 +163,30 @@ class PackageBuilder:
         image = Image.new("RGB", (width, height), (22, 43, 72))
         draw = ImageDraw.Draw(image)
         draw.rectangle([24, 24, width - 24, height - 24], outline=(232, 196, 104), width=4)
-        font_large = self._font(42)
+        font_large = self._font(40)
         font_mid = self._font(28)
         font_small = self._font(22)
-        name = info.name if len(info.name) < 42 else info.name[:39] + "..."
-        self._centered(draw, name, 180, font_large, (255, 255, 255), width)
-        self._centered(draw, "日本語化", 300, font_mid, (232, 196, 104), width)
-        self._centered(draw, "WordPress Plugin", 380, font_small, (200, 214, 230), width)
-        self._centered(draw, f"v{info.version}", 460, font_small, (170, 184, 200), width)
+        name = ascii_overlay(info.name) or ascii_overlay(info.slug.replace("-", " ").title()) or "WordPress Plugin"
+        name_lines = _wrap_ascii(name, 22)[:3]
+        y = 168 if len(name_lines) == 1 else 140
+        for line in name_lines:
+            self._centered(draw, line, y, font_large, (255, 255, 255), width)
+            y += 52
+        self._centered(draw, IMAGE_KICKER, y + 18, font_mid, (232, 196, 104), width)
+        self._centered(draw, IMAGE_SUBLINE, y + 70, font_small, (200, 214, 230), width)
+        self._centered(draw, f"v{ascii_overlay(info.version) or info.version}", y + 124, font_small, (170, 184, 200), width)
         image.save(dest, "PNG")
         self.logger.info("商品画像生成: %s", dest)
         return dest
 
     def _font(self, size: int) -> ImageFont.ImageFont:
         candidates = [
-            "C:/Windows/Fonts/meiryo.ttc",
-            "C:/Windows/Fonts/msgothic.ttc",
-            "C:/Windows/Fonts/YuGothM.ttc",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/tahoma.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "C:/Windows/Fonts/meiryo.ttc",
         ]
         for path in candidates:
             if Path(path).exists():
@@ -196,3 +211,19 @@ class PackageBuilder:
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(path.read_bytes())
+
+
+def _wrap_ascii(text: str, width: int) -> list[str]:
+    words = (text or "").split()
+    if not words:
+        return ["WordPress Plugin"]
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        if len(current) + 1 + len(word) <= width:
+            current = f"{current} {word}"
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines

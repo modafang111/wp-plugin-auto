@@ -1,12 +1,15 @@
+import logging
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from config import Settings, load_settings
 from src.base_admin import forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
 from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
+from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import extract_php_strings
 from src.utils import extract_plugin_slug, placeholder_tokens, safe_extract_zip
 
@@ -84,6 +87,21 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(is_protected_item_url("https://admin.thebase.com/shop_admin/items/add", "55749997"))
         self.assertTrue(forbidden_control_name("削除する"))
         self.assertFalse(forbidden_control_name("登録する"))
+
+    def test_product_image_overlay_is_english_ascii(self) -> None:
+        self.assertTrue(IMAGE_KICKER.isascii())
+        self.assertTrue(IMAGE_SUBLINE.isascii())
+        self.assertEqual(ascii_overlay("Classic Editor"), "Classic Editor")
+        self.assertEqual(ascii_overlay("日本語化"), "")
+        settings = load_settings()
+        builder = PackageBuilder(settings, logging.getLogger("test"))
+        with tempfile.TemporaryDirectory() as raw:
+            dest = Path(raw) / "product_image.png"
+            info = SimpleNamespace(name="Classic Editor", version="1.7.0", slug="classic-editor")
+            path = builder.generate_image(info, dest)
+            self.assertIsNotNone(path)
+            self.assertTrue(path.exists())
+            self.assertGreater(path.stat().st_size, 1000)
 
 
 if __name__ == "__main__":
