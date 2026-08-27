@@ -82,6 +82,7 @@ Windows では次のバッチをダブルクリックしてもよい。
   deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
   register-draft.bat URL        翻訳して非公開登録
+  register-task.bat             5分おきのタスク スケジューラ登録
 
 コマンド例:
 
@@ -373,7 +374,7 @@ PCでの準備:
 Windows タスク スケジューラ（推奨。--watch は使わない）:
 
   --watch は終了しない常駐なので、タスク スケジューラ向きではない。
-  5分おきに deliver-orders.bat を1回ずつ実行する。
+  register-task.bat をダブルクリックすると、5分おきのタスクを作成して1回実行する。
 
   1) タスク スケジューラを開く
   2) 「基本タスクの作成」
@@ -391,7 +392,11 @@ Windows タスク スケジューラ（推奨。--watch は使わない）:
 
 コマンド一発で作る場合:
 
-     schtasks /create /tn "base-wp-ja-auto-deliver" /sc minute /mo 5 /f /tr "D:\dev\base-wp-ja-auto\deliver-orders.bat"
+     register-task.bat
+
+  または:
+
+     schtasks /create /tn "base-wp-ja-auto-deliver" /sc minute /mo 5 /f /it /tr "D:\dev\base-wp-ja-auto\deliver-orders.bat"
 
 作成後は「タスクの実行」で1回試し、logs\ の最新ファイルを見る。
 「未対応の注文: 0 件」なら正常（売れていないだけ）。
