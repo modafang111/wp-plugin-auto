@@ -1,0 +1,45 @@
+# Secrets and local env
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Runtime data (generated per machine)
+work/*
+!work/.gitkeep
+output/*
+!output/.gitkeep
+logs/*
+!logs/.gitkeep
+screenshots/*
+!screenshots/.gitkeep
+backup/*
+!backup/.gitkeep
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/base_tokens.json
+data/base_template.json
+data/playwright/
+data/sessions/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
+
+# Editor
+.idea/
+.vscode/
+*.swp
