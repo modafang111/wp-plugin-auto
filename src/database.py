@@ -122,6 +122,10 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    def is_finished(self, slug: str, version: str) -> bool:
+        job = self.get_job(slug, version)
+        return bool(job and job.get("status") in DONE_STATUSES)
+
     def successful_job(self, slug: str, version: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """

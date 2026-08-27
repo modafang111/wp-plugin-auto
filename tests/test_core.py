@@ -10,8 +10,10 @@ from config import Settings, load_settings
 from src.base_admin import forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
 from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
+from src.database import Database
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import decide_already_translated, extract_php_strings
+from src.plugin_discovery import discover_plugins, eligibility_reason, plugin_has_ja_pack
 from src.order_delivery import (
     ensure_test_zip,
     is_actionable_delivery_failure,
@@ -238,6 +240,74 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(is_actionable_delivery_failure("購入者メールアドレスがありません。"))
         self.assertFalse(is_actionable_delivery_failure("この注文は既に送信済みです。"))
         self.assertFalse(is_actionable_delivery_failure("公式デジタルコンテンツのため BASE 側でダウンロード案内されます。"))
+
+    def test_discover_skips_official_ja_pack_and_picks_next(self) -> None:
+        packed = {
+            "name": "Contact Form 7",
+            "slug": "contact-form-7",
+            "version": "6.1.7",
+            "download_link": "https://downloads.wordpress.org/plugin/contact-form-7.6.1.7.zip",
+            "active_installs": 10000000,
+            "language_packs": [{"language": "ja", "package": "https://downloads.wordpress.org/translation/plugin/contact-form-7/6.1.7/ja.zip"}],
+        }
+        open_plugin = {
+            "name": "White Label CMS",
+            "slug": "white-label-cms",
+            "version": "2.2.9",
+            "download_link": "https://downloads.wordpress.org/plugin/white-label-cms.2.2.9.zip",
+            "active_installs": 40000,
+            "language_packs": [{"language": "en_GB"}],
+        }
+        self.assertTrue(plugin_has_ja_pack(packed))
+        self.assertFalse(plugin_has_ja_pack(open_plugin))
+        self.assertIn("language pack", eligibility_reason(packed, min_installs=1000, skip_slugs=set()))
+        self.assertEqual(eligibility_reason(open_plugin, min_installs=1000, skip_slugs=set()), "")
+        self.assertIn("対象外", eligibility_reason(open_plugin, min_installs=1000, skip_slugs={"white-label-cms"}))
+
+        class FakeWP:
+            def query_plugins(self, **_kwargs):
+                return [packed, open_plugin], {"page": 1, "pages": 1}
+
+            def glotpress_ja_percent(self, _slug):
+                return 0
+
+        with tempfile.TemporaryDirectory() as raw:
+            db = Database(Path(raw) / "jobs.sqlite3")
+            settings = load_settings(
+                overrides={
+                    "DISCOVER_BROWSE": "popular",
+                    "DISCOVER_MAX_PAGES": "1",
+                    "DISCOVER_MIN_INSTALLS": "1000",
+                    "DISCOVER_SKIP_SLUGS": "hello-dolly,akismet",
+                }
+            )
+            settings.discover_max_pages = 1
+            found = discover_plugins(
+                FakeWP(),
+                db,
+                settings,
+                logging.getLogger("test"),
+                limit=1,
+                check_glotpress=False,
+            )
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].slug, "white-label-cms")
+            self.assertTrue(found[0].url.endswith("/white-label-cms/"))
+            db.upsert_job("white-label-cms", "2.2.9", status="completed")
+            again = discover_plugins(
+                FakeWP(),
+                db,
+                settings,
+                logging.getLogger("test"),
+                limit=1,
+                check_glotpress=False,
+            )
+            self.assertEqual(again, [])
+            db.close()
+
+        args = parse_args(["--register", "--discover"])
+        self.assertTrue(args.register)
+        self.assertTrue(args.discover)
 
 
 if __name__ == "__main__":

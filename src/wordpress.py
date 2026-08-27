@@ -163,6 +163,35 @@ class WordPressClient:
             raise PipelineError("WordPress情報取得", "バージョン情報を取得できませんでした。")
         return info
 
+    def query_plugins(
+        self,
+        *,
+        browse: str = "popular",
+        page: int = 1,
+        per_page: int = 30,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if browse not in {"popular", "new", "updated", "featured", "beta"}:
+            raise PipelineError("プラグイン自動取得", f"未対応のbrowseです: {browse}")
+        if page < 1 or per_page < 1 or per_page > 100:
+            raise PipelineError("プラグイン自動取得", "page / per_page が不正です。")
+        params = {
+            "action": "query_plugins",
+            "request[browse]": browse,
+            "request[page]": str(page),
+            "request[per_page]": str(per_page),
+            "request[fields][active_installs]": "1",
+            "request[fields][language_packs]": "1",
+            "request[fields][short_description]": "1",
+            "request[locale]": "ja",
+        }
+        url = PLUGIN_API + "?" + urlencode(params)
+        data = self.http.get_json(url)
+        if not isinstance(data, dict):
+            raise PipelineError("プラグイン自動取得", "Plugin APIの応答が不正です。")
+        plugins = data.get("plugins") if isinstance(data.get("plugins"), list) else []
+        info = data.get("info") if isinstance(data.get("info"), dict) else {}
+        return [row for row in plugins if isinstance(row, dict)], info
+
     def fetch_translations(self, slug: str, version: str) -> list[dict[str, Any]]:
         url = f"{TRANSLATIONS_API}?slug={slug}&version={version}"
         try:

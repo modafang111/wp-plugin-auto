@@ -23,6 +23,7 @@ from src.order_delivery import OrderDeliveryService, ensure_test_zip
 from src.package_builder import PackageBuilder
 from src.plugin_analyzer import PluginAnalyzer
 from src.plugin_downloader import PluginDownloader
+from src.plugin_discovery import discover_plugins
 from src.translation_builder import TranslationBuilder, dump_strings
 from src.translator import get_translator, load_extra_glossary
 from src.utils import SafeHttp, extract_plugin_slug, official_plugin_url, read_json, write_json
@@ -50,6 +51,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("url", nargs="?", help="https://wordpress.org/plugins/<slug>/")
     parser.add_argument("--input", dest="input_file", help="1行1URLのテキストファイル")
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="WordPress.org から公式JAパックの無いプラグインを自動取得する（URL省略時）",
+    )
+    parser.add_argument(
+        "--discover-only",
+        action="store_true",
+        help="自動取得だけ行い、翻訳・BASE登録はしない",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="自動取得する件数（初期値は DISCOVER_LIMIT=1）")
+    parser.add_argument("--browse", default="", help="popular / new / updated。カンマ区切り可")
     parser.add_argument("--dry-run", action="store_true", help="BASEへ実登録しない")
     parser.add_argument("--resume", action="store_true", help="前回の途中から再開（翻訳キャッシュを利用）")
     parser.add_argument("--translate-only", action="store_true", help="翻訳と販売ZIPまで。BASE登録しない")
@@ -105,6 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.register:
         overrides["DRY_RUN"] = "false"
         overrides["BASE_PUBLISH_MODE"] = "public"
+    if args.discover_only:
+        args.discover = True
+    if args.browse:
+        overrides["DISCOVER_BROWSE"] = args.browse
+    if args.limit is not None:
+        overrides["DISCOVER_LIMIT"] = str(args.limit)
     settings = load_settings(overrides=overrides)
     settings.ensure_directories()
     load_extra_glossary(settings.data_dir / "templates" / "glossary.json")
@@ -131,8 +150,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_deliver_orders(settings, dry_run=args.dry_run, watch=args.watch, otp=args.otp)
 
     urls = collect_urls(args, settings)
+    if args.discover and not urls:
+        discovered = run_discover(settings, limit=args.limit)
+        if args.discover_only:
+            return 0 if discovered else 1
+        urls = discovered
     if not urls:
-        print("プラグインURLを指定するか、--input で一覧ファイルを指定してください。", file=sys.stderr)
+        print(
+            "プラグインURLを指定するか、--discover で WordPress.org から自動取得してください。",
+            file=sys.stderr,
+        )
         return 2
 
     exit_code = 0
@@ -147,6 +174,9 @@ def collect_urls(args: argparse.Namespace, settings: Settings) -> list[str]:
     urls: list[str] = []
     if args.url:
         urls.append(args.url.strip())
+        return urls
+    if getattr(args, "discover", False) or getattr(args, "discover_only", False):
+        return []
     input_file = Path(args.input_file) if args.input_file else None
     if not urls and not input_file:
         default_input = settings.input_dir / "plugins.txt"
@@ -159,6 +189,32 @@ def collect_urls(args: argparse.Namespace, settings: Settings) -> list[str]:
             if line and not line.startswith("#"):
                 urls.append(line)
     return urls
+
+
+def run_discover(settings: Settings, limit: int | None = None) -> list[str]:
+    logger, log_path = setup_logger(settings.logs_dir, slug="discover", secrets=settings.secret_values())
+    db = Database(settings.db_path)
+    try:
+        wp = WordPressClient(SafeHttp(timeout=settings.http_timeout_seconds))
+        want = limit if limit is not None else settings.discover_limit
+        found = discover_plugins(wp, db, settings, logger, limit=want)
+        lines = [
+            f"{item.url}  # {item.name} {item.version} installs={item.active_installs if item.active_installs is not None else '?'}"
+            for item in found
+        ]
+        out = settings.input_dir / "discovered.txt"
+        header = [
+            "# WordPress.org から自動取得した、公式JAパックの無いプラグイン",
+            f"# 取得日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+        ]
+        out.write_text("\n".join(header + lines) + ("\n" if lines else ""), encoding="utf-8")
+        logger.info("候補を保存: %s (%s件) ログ=%s", out, len(found), log_path)
+        for line in lines:
+            print(line)
+        return [item.url for item in found]
+    finally:
+        db.close()
 
 
 def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:

@@ -83,15 +83,30 @@ Windows では次のバッチをダブルクリックしてもよい。
   test-deliver.bat              自分宛てにZIP付きお届けテスト
   deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
-  register.bat URL              翻訳して公開登録
+  register.bat                  次のプラグインを自動取得して公開登録
+  register.bat URL              指定URLを翻訳して公開登録
+  discover.bat                  公式JAパックの無いプラグインを一覧するだけ
   register-draft.bat URL        翻訳して非公開登録
   register-task.bat             5分おきのタスク スケジューラ登録
 
 コマンド例:
 
-1件:
+1件（指定URL）:
 
-     python app.py "https://wordpress.org/plugins/contact-form-7/"
+     python app.py --register "https://wordpress.org/plugins/header-footer-code-manager/"
+
+次の1件を WordPress.org から自動取得して公開登録:
+
+     python app.py --register --discover
+
+     または URL なし:
+
+     register.bat
+
+候補を見るだけ（翻訳しない）:
+
+     python app.py --discover-only --limit 5
+     discover.bat
 
 DRY RUN（BASEへ登録しない。初期の安全な確認用）:
 
@@ -101,7 +116,9 @@ DRY RUN（BASEへ登録しない。初期の安全な確認用）:
 
      python app.py --input input\plugins.txt
 
-URL省略時、input\plugins.txt があればそれを使う。
+URL省略時、`python app.py` だけなら input\plugins.txt を使う。
+register.bat を URL なしで実行したときは plugins.txt は使わず、
+WordPress.org から公式JAパックの無いプラグインを1件自動取得する。
 
 途中から再開（翻訳APIをやり直さない）:
 
@@ -147,6 +164,11 @@ BASE登録のみ（翻訳成果物がある前提）:
 
      python app.py --register "https://wordpress.org/plugins/header-footer-code-manager/"
 
+次の1件を自動取得して公開登録:
+
+     python app.py --register --discover
+     register.bat
+
 非公開で実登録（確認用。ショップには出さない）:
 
      python app.py --register-draft "https://wordpress.org/plugins/classic-editor/"
@@ -162,6 +184,22 @@ BASE登録のみ（翻訳成果物がある前提）:
 番号はログに書きません。一度ログインできたブラウザ状態は
 data\playwright\base_state.json に保存され、次回は番号なしで進めます。
 テンプレート商品の編集・削除はしません。
+
+
+2.1 プラグインの自動取得
+------------------------
+URLを毎回指定しなくてもよい。WordPress.org 公式ディレクトリ
+（api.wordpress.org の query_plugins）から、次の条件で拾う。
+
+  - 無料（downloads.wordpress.org の公式ZIPがある）
+  - 公式日本語 language pack が無い
+  - 公式日本語の完了率が SKIP_IF_JA_PERCENT 未満
+  - このPCの jobs.sqlite3 で同じバージョンを処理済みでない
+  - DISCOVER_MIN_INSTALLS 以上（初期値 1000）
+  - hello-dolly / akismet などは除外
+
+1回の register.bat は初期値で 1件だけ処理する（DISCOVER_LIMIT=1）。
+候補を先に見るだけなら discover.bat 。結果は input\discovered.txt。
 
 
 3. BASE（thebase.com）と公式APIの分担
@@ -542,6 +580,9 @@ backup\
   SALE_PACKAGE_MODE
   SKIP_IF_JA_PERCENT
   CONTINUE_IF_ALREADY_TRANSLATED
+  DISCOVER_BROWSE
+  DISCOVER_LIMIT
+  DISCOVER_MIN_INSTALLS
   TRANSLATION_PROVIDER
   OPENAI_MODEL
   BASE_IMAGE_MODE

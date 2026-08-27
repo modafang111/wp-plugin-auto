@@ -82,6 +82,13 @@ class Settings:
     delivery_lookback_days: int
     delivery_max_zip_bytes: int
 
+    discover_browse: str
+    discover_limit: int
+    discover_min_installs: int
+    discover_max_pages: int
+    discover_per_page: int
+    discover_skip_slugs: str
+
     max_zip_bytes: int
     max_uncompressed_bytes: int
     max_zip_files: int
@@ -229,6 +236,12 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         delivery_poll_seconds=_as_int(env("DELIVERY_POLL_SECONDS"), 300),
         delivery_lookback_days=_as_int(env("DELIVERY_LOOKBACK_DAYS"), 90),
         delivery_max_zip_bytes=_as_int(env("DELIVERY_MAX_ZIP_BYTES"), 20 * 1024 * 1024),
+        discover_browse=(env("DISCOVER_BROWSE", "popular") or "popular").lower(),
+        discover_limit=_as_int(env("DISCOVER_LIMIT"), 1),
+        discover_min_installs=_as_int(env("DISCOVER_MIN_INSTALLS"), 1000),
+        discover_max_pages=_as_int(env("DISCOVER_MAX_PAGES"), 80),
+        discover_per_page=_as_int(env("DISCOVER_PER_PAGE"), 30),
+        discover_skip_slugs=env("DISCOVER_SKIP_SLUGS", "hello-dolly,akismet"),
         max_zip_bytes=_as_int(env("MAX_ZIP_BYTES"), 50 * 1024 * 1024),
         max_uncompressed_bytes=_as_int(env("MAX_UNCOMPRESSED_BYTES"), 200 * 1024 * 1024),
         max_zip_files=_as_int(env("MAX_ZIP_FILES"), 8000),
@@ -238,4 +251,12 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         settings.base_publish_mode = "draft"
     if settings.sale_package_mode not in {"translation_only", "plugin_and_translation"}:
         settings.sale_package_mode = "translation_only"
+    allowed_browse = {"popular", "new", "updated", "featured"}
+    browses = [part.strip() for part in settings.discover_browse.split(",") if part.strip()]
+    if not browses or any(part not in allowed_browse for part in browses):
+        settings.discover_browse = "popular"
+    settings.discover_limit = max(1, min(settings.discover_limit, 20))
+    settings.discover_max_pages = max(1, min(settings.discover_max_pages, 200))
+    settings.discover_per_page = max(1, min(settings.discover_per_page, 100))
+    settings.discover_min_installs = max(0, settings.discover_min_installs)
     return settings
