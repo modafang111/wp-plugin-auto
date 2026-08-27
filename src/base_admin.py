@@ -181,9 +181,14 @@ class BaseAdminClient:
                 self._login_or_resume(page, context, screenshot_dir, _read_pending(self.settings))
                 edit_url = f"{ADMIN_ORIGIN}/shop_admin/items/edit/{item_id}"
                 page.goto(edit_url, wait_until="domcontentloaded", timeout=45000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    page.wait_for_timeout(1500)
                 self._guard_template(page.url, template_id)
                 if str(item_id) not in page.url:
                     raise PipelineError("BASE商品登録", f"指定した商品の編集画面ではありません: {page.url}")
+                page.locator("input[type=file]").first.wait_for(state="attached", timeout=20000)
                 listing = {"generated_image": str(image_path)}
                 if not self._upload_product_image(page, listing):
                     raise NeedsHumanReview("BASE商品登録", "画像のファイル欄が見つかりません。")
@@ -453,6 +458,10 @@ class BaseAdminClient:
         if not path.exists() or path.stat().st_size < 32:
             return False
         inputs = page.locator("input[type=file]")
+        try:
+            inputs.first.wait_for(state="attached", timeout=8000)
+        except Exception:
+            return False
         chosen = None
         for i in range(inputs.count()):
             el = inputs.nth(i)
