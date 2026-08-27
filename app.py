@@ -69,6 +69,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="DRY_RUN を無視し、非公開のまま BASE へ実登録する（テンプレートは変更しない）",
     )
     parser.add_argument(
+        "--register",
+        action="store_true",
+        help="DRY_RUN を無視し、公開のまま BASE へ実登録する（テンプレートは変更しない）",
+    )
+    parser.add_argument(
         "--otp",
         default="",
         help="BASEのメール認証番号（6桁）。実登録時のみ。ログには残さない",
@@ -97,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.register_draft:
         overrides["DRY_RUN"] = "false"
         overrides["BASE_PUBLISH_MODE"] = "draft"
+    if args.register:
+        overrides["DRY_RUN"] = "false"
+        overrides["BASE_PUBLISH_MODE"] = "public"
     settings = load_settings(overrides=overrides)
     settings.ensure_directories()
     load_extra_glossary(settings.data_dir / "templates" / "glossary.json")
@@ -491,6 +499,7 @@ def _notify_success(mailer: Mailer, settings: Settings, info: PluginInfo, qualit
             "admin_url": (created or {}).get("admin_url") if created else "",
             "method": (created or {}).get("method") if created else "",
             "output_zip": package.get("output_zip"),
+            "publish_mode": settings.base_publish_mode,
             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "dry_run": settings.dry_run,
         }

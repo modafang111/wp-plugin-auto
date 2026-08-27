@@ -81,8 +81,35 @@ class Mailer:
                 ("管理画面", info.get("admin_url") or ""),
                 ("登録方法", info.get("method") or ""),
                 ("販売用ZIP保存場所", info.get("output_zip")),
+                ("公開状態", info.get("publish_mode")),
                 ("処理日時", info.get("processed_at")),
                 ("DRY_RUN", info.get("dry_run")),
+            ]
+        )
+        self.send(subject, body)
+
+    def sale(self, info: dict) -> None:
+        subject = f"【BASE売上・自動お届け】{info.get('title') or ''}"
+        body = self._lines(
+            [
+                ("商品名", info.get("title")),
+                ("注文キー", info.get("unique_key")),
+                ("BASE商品ID", info.get("item_id")),
+                ("送付ZIP", info.get("zip_name")),
+                ("購入者", info.get("buyer")),
+                ("対応", "日本語化ZIPを購入者へメールし、注文を対応済にします"),
+            ]
+        )
+        self.send(subject, body)
+
+    def sale_failed(self, info: dict) -> None:
+        subject = f"【BASE売上・お届け失敗】{info.get('title') or ''}"
+        body = self._lines(
+            [
+                ("商品名", info.get("title")),
+                ("注文キー", info.get("unique_key")),
+                ("BASE商品ID", info.get("item_id")),
+                ("理由", info.get("reason")),
             ]
         )
         self.send(subject, body)

@@ -184,7 +184,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
     settings = Settings(
         root=ROOT,
         dry_run=_as_bool(env("DRY_RUN"), True),
-        base_publish_mode=env("BASE_PUBLISH_MODE", "draft").lower() or "draft",
+        base_publish_mode=env("BASE_PUBLISH_MODE", "public").lower() or "public",
         continue_if_already_translated=_as_bool(env("CONTINUE_IF_ALREADY_TRANSLATED"), False),
         skip_if_ja_percent=_as_int(env("SKIP_IF_JA_PERCENT"), 95),
         base_login_email=env("BASE_LOGIN_EMAIL"),

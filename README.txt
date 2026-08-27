@@ -53,10 +53,12 @@ WordPress.org 公式ディレクトリの無料プラグインを対象に、
    client_id / client_secret / access_token は thebase.com のショップ画面では
    発行されない。未記入のままでよい。
 
-6) 最初は必ず次のままにする。
+6) 最初は DRY_RUN=true のままにする（BASEへは登録しない）。
+   公開登録するときは register.bat（DRY_RUN を無視して公開）。
+   非公開のテストだけしたいときは register-draft.bat または --test-base。
 
      DRY_RUN=true
-     BASE_PUBLISH_MODE=draft
+     BASE_PUBLISH_MODE=public
 
 7) 公式API（任意）を使う場合だけ、https://developers.thebase.com/ でアプリ申請し、
    次の scope を付与する。
@@ -81,6 +83,7 @@ Windows では次のバッチをダブルクリックしてもよい。
   test-deliver.bat              自分宛てにZIP付きお届けテスト
   deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
+  register.bat URL              翻訳して公開登録
   register-draft.bat URL        翻訳して非公開登録
   register-task.bat             5分おきのタスク スケジューラ登録
 
@@ -140,7 +143,11 @@ BASE登録のみ（翻訳成果物がある前提）:
 
      python app.py --deliver-orders --watch
 
-非公開で実登録（.env の DRY_RUN=true のまま、1件だけ下書き登録）:
+公開で実登録（.env の DRY_RUN=true のまま、1件だけ公開登録）:
+
+     python app.py --register "https://wordpress.org/plugins/header-footer-code-manager/"
+
+非公開で実登録（確認用。ショップには出さない）:
 
      python app.py --register-draft "https://wordpress.org/plugins/classic-editor/"
 
@@ -186,7 +193,8 @@ APIで実施する（資格情報がある場合）:
 API資格情報が無い場合:
   - ショップログイン（BASE_LOGIN_EMAIL / BASE_LOGIN_PASSWORD）で
     Playwright が管理画面から新規商品を登録する
-  - 初期は BASE_PUBLISH_MODE=draft（非公開）
+  - 本番は BASE_PUBLISH_MODE=public（公開）。register.bat / --register が確実
+  - --register-draft と --test-base だけ非公開
   - python app.py --test-base で非公開のテスト商品を1件だけ実登録できる
 
 APIに存在しない / 使わない:
@@ -204,9 +212,9 @@ Playwright:
     「BASEで手動認証が必要です」とメールする。回避コードは持たない。
   - メール認証番号はユーザーが --otp で渡したときだけ入力する。
   - 実画面（2026-08時点）の新規登録は「+ 商品を登録」→ 通常商品
-    （/shop_admin/items/add）。公開状態は「非公開」を選ぶ。
+    （/shop_admin/items/add）。公開状態は BASE_PUBLISH_MODE に従う。
   - 「デジタルコンテンツ」がメニューに出ないショップでは ZIP は未添付のまま
-    非公開商品だけ登録し、メールでその旨を知らせる。
+    通常商品として登録し、売れたあとに --deliver-orders でZIPをメールする。
   - 削除ボタンは押さない。
 
 画像:
@@ -350,6 +358,7 @@ PCでの準備:
 
   3) .env
        CONTINUE_IF_ALREADY_TRANSLATED=false
+       BASE_PUBLISH_MODE=public
        PLAYWRIGHT_HEADLESS=true
        REQUIRE_EMAIL=true  （本番）
        SMTP と NOTIFY_EMAIL は --test-mail が通った設定のまま
@@ -418,6 +427,16 @@ Windows タスク スケジューラ（推奨。--watch は使わない）:
 
 公式デジタルコンテンツとして売っている注文は、二重送信しないようスキップします。
 
+売れたときの通知（NOTIFY_EMAIL）:
+
+  1) 購入者へ日本語化ZIP付きメール
+  2) 同じメールを NOTIFY_EMAIL へ BCC（購入者と同じ宛先なら BCC は付けない）
+  3) NOTIFY_EMAIL へ 【BASE売上・自動お届け】
+  失敗時は 【BASE売上・お届け失敗】（ZIPが無い・送信失敗など。同じ注文へは一度だけ）
+
+  タスク スケジューラで deliver-orders.bat が動いていることが前提です。
+  既存の非公開商品は、管理画面で公開するまでショップに出ません。
+
 
 8. ログと履歴
 -------------
@@ -439,6 +458,8 @@ SQLite data\jobs.sqlite3:
 NOTIFY_EMAIL 宛。
 
 成功: 【BASE商品登録完了】プラグイン名 バージョン
+売上お届け: 【BASE売上・自動お届け】商品名（購入者へZIP送信後）
+お届け失敗: 【BASE売上・お届け失敗】商品名
 エラー: 【BASE商品登録エラー】プラグイン名
 要確認: 【要確認】BASE商品登録処理
 
@@ -474,7 +495,7 @@ SMTP未設定でも DRY_RUN は止めない（REQUIRE_EMAIL=false）。
 - 外部URLは許可ホストのみ（wordpress.org / thebase.com / admin.thebase.com / api.thebase.in / api.openai.com 等）。
 - 既存BASE商品を削除・変更する機能は無い。
 - 予期しない状態では止める。
-- 初期の公開状態は draft（非表示）。
+- 本番の公開状態は public。--test-base と --register-draft だけ非公開。
 
 
 12. 推奨する確認手順
@@ -487,9 +508,10 @@ SMTP未設定でも DRY_RUN は止めない（REQUIRE_EMAIL=false）。
 第6段階  販売ZIP
 第7段階  BASEテンプレート取得
 第8段階  DRY RUN で登録予定内容を確認
-第9段階  DRY_RUN=false で非公開のテスト商品を1件だけ登録
+第9段階  --test-base で非公開のテスト商品を1件だけ登録
 第10段階 人が BASE 管理画面で確認
-第11段階 問題なければ通常運用（必要なら BASE_PUBLISH_MODE=public）
+第11段階 問題なければ register.bat で公開登録。売れたら deliver-orders.bat が
+         購入者へZIPを送り、NOTIFY_EMAIL へ売上通知する
 
 
 13. ディレクトリ

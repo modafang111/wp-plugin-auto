@@ -5,13 +5,20 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+from app import parse_args
 from config import Settings, load_settings
 from src.base_admin import forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
 from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import decide_already_translated, extract_php_strings
-from src.order_delivery import ensure_test_zip, is_safe_sales_zip, parse_order_plans, resolve_sales_zip
+from src.order_delivery import (
+    ensure_test_zip,
+    is_actionable_delivery_failure,
+    is_safe_sales_zip,
+    parse_order_plans,
+    resolve_sales_zip,
+)
 from src.utils import extract_plugin_slug, placeholder_tokens, redact_email, safe_extract_zip
 
 
@@ -199,6 +206,38 @@ class CoreTests(unittest.TestCase):
         )
         self.assertIn("cancelled", plans[0].skip_reason)
         self.assertIn("既に送信済み", plans[1].skip_reason)
+
+    def test_register_flag_forces_public_listing(self) -> None:
+        args = parse_args(["--register", "https://wordpress.org/plugins/hello-dolly/"])
+        self.assertTrue(args.register)
+        self.assertFalse(args.register_draft)
+        public = load_settings(overrides={"BASE_PUBLISH_MODE": "public", "DRY_RUN": "false"})
+        draft = load_settings(overrides={"BASE_PUBLISH_MODE": "draft", "DRY_RUN": "false"})
+        self.assertEqual(public.visible_flag, 1)
+        self.assertEqual(public.base_publish_mode, "public")
+        self.assertEqual(draft.visible_flag, 0)
+
+    def test_missing_zip_is_actionable_sale_failure(self) -> None:
+        header = {
+            "unique_key": "XYZ789",
+            "buyer": {"mail_address": "buyer@example.com", "last_name": "山田", "first_name": "太郎"},
+            "orders": [
+                {"id": "9", "item_id": "99", "name": "Cの日本語化ファイル", "status": "ordered"},
+            ],
+        }
+        plans = parse_order_plans(
+            header,
+            jobs=[],
+            output_dir=Path("."),
+            delivery_map={},
+            root=Path("."),
+            already_sent=set(),
+        )
+        self.assertIn("日本語化ZIP", plans[0].skip_reason)
+        self.assertTrue(is_actionable_delivery_failure(plans[0].skip_reason))
+        self.assertTrue(is_actionable_delivery_failure("購入者メールアドレスがありません。"))
+        self.assertFalse(is_actionable_delivery_failure("この注文は既に送信済みです。"))
+        self.assertFalse(is_actionable_delivery_failure("公式デジタルコンテンツのため BASE 側でダウンロード案内されます。"))
 
 
 if __name__ == "__main__":

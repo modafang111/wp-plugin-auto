@@ -1,11 +1,12 @@
-"""BASE shop admin (Playwright). Creates unpublished digital items. Never deletes.
+"""BASE shop admin (Playwright). Creates shop items. Never deletes.
 
 Confirmed live on 2026-08-27:
 - Login: https://admin.thebase.com/users/login
 - New environments hit email OTP at
   https://admin.thebase.com/users/verify_two_factor_auth_via_mail
 - This shop's installed Apps do not include「デジタルコンテンツ販売」.
-  New items are created as 通常商品 at /shop_admin/items/add (非公開).
+  New items are created as 通常商品 at /shop_admin/items/add.
+  Visibility follows BASE_PUBLISH_MODE (public by default; draft for tests).
 - Existing JA listings are regular products (price 550, category 日本語翻訳ファイル).
 
 Template product is read-only. Clicks named 削除 / この商品を削除 / 更新する
@@ -239,8 +240,9 @@ class BaseAdminClient:
                 context.storage_state(path=str(state_path))
                 _clear_pending(self.settings)
                 self.logger.info(
-                    "BASE管理画面で非公開商品を登録: item_id=%s url=%s",
+                    "BASE管理画面で商品を登録: item_id=%s visible=%s url=%s",
                     created.get("item_id"),
+                    listing.get("visible"),
                     created.get("product_url") or created.get("admin_url"),
                 )
                 return created
@@ -491,7 +493,7 @@ class BaseAdminClient:
             else:
                 self.logger.warning(
                     "「商品を登録」メニューにデジタルコンテンツがありません。"
-                    " 通常商品の新規登録画面へ進みます（非公開）。"
+                    " 通常商品の新規登録画面へ進みます。"
                 )
                 page.goto(ITEMS_ADD_URL, wait_until="domcontentloaded", timeout=45000)
         else:
@@ -532,7 +534,7 @@ class BaseAdminClient:
             stock_box.first.fill(stock)
         elif not _fill_by_labels(page, ["在庫数"], stock):
             self.logger.warning("在庫の入力欄が見つかりません。画面上の初期値を使います")
-        self._set_unpublished(page)
+        self._set_visibility(page, listing)
         pin = page.locator("#orderfirst")
         if pin.count():
             if pin.first.is_checked():
@@ -551,7 +553,7 @@ class BaseAdminClient:
         if zip_input is None:
             self.logger.warning(
                 "デジタルコンテンツ販売 App が未導入のため ZIP は未添付です。"
-                " 既存ショップと同じ通常商品（非公開）として登録します。"
+                " 既存ショップと同じ通常商品として登録します。"
             )
         else:
             zip_input.set_input_files(str(zip_path))
@@ -585,18 +587,25 @@ class BaseAdminClient:
         self.logger.info("商品画像を添付しました: %s", path.name)
         return True
 
-    def _set_unpublished(self, page: Any) -> None:
-        label = page.locator("label.c-radio__label").filter(has_text=re.compile(r"^(非公開|未公開)$"))
-        if label.count():
-            label.first.click()
-            self.logger.info("公開状態を非公開にしました")
-            return
-        labeled = page.get_by_text(re.compile(r"^(非公開|未公開)$"), exact=True)
-        if labeled.count():
-            labeled.first.click()
-            self.logger.info("公開状態を非公開にしました")
-            return
-        self.logger.warning("公開/非公開スイッチが見つかりません。BASE_PUBLISH_MODE=draft のまま登録します")
+    def _set_visibility(self, page: Any, listing: dict[str, Any]) -> None:
+        if "visible" in listing:
+            publish = int(listing.get("visible") or 0) == 1
+        else:
+            publish = self.settings.visible_flag == 1
+        wanted = "公開" if publish else "非公開"
+        patterns = [r"^公開$"] if publish else [r"^(非公開|未公開)$"]
+        for pattern in patterns:
+            label = page.locator("label.c-radio__label").filter(has_text=re.compile(pattern))
+            if label.count():
+                label.first.click()
+                self.logger.info("公開状態を%sにしました", wanted)
+                return
+            labeled = page.get_by_text(re.compile(pattern), exact=True)
+            if labeled.count():
+                labeled.first.click()
+                self.logger.info("公開状態を%sにしました", wanted)
+                return
+        self.logger.warning("公開/非公開スイッチが見つかりません。画面の初期値のまま登録します")
 
     def _submit_new_item(self, page: Any, listing: dict[str, Any], screenshot_dir: Path, template_id: str) -> dict[str, Any]:
         submit = _first_existing(
@@ -640,16 +649,17 @@ class BaseAdminClient:
         if not item_id:
             raise NeedsHumanReview(
                 "BASE商品登録",
-                "登録ボタンは押しましたが、新しい商品IDを画面から取得できませんでした。管理画面で未公開商品を確認してください。",
+                "登録ボタンは押しましたが、新しい商品IDを画面から取得できませんでした。管理画面で新しい商品を確認してください。",
             )
         shop = (self.settings.shop_public_base_url or "").rstrip("/")
         product_url = f"{shop}/items/{item_id}" if shop else ""
         admin_url = f"{ADMIN_ORIGIN}/shop_admin/items/edit/{item_id}"
+        visible = int(listing.get("visible") if listing.get("visible") is not None else self.settings.visible_flag)
         return {
             "item_id": item_id,
             "product_url": product_url,
             "admin_url": admin_url,
-            "visible": 0,
+            "visible": visible,
             "method": "playwright_admin",
             "file_uploaded": bool(listing.get("file_uploaded")),
             "image_uploaded": bool(listing.get("image_uploaded")),

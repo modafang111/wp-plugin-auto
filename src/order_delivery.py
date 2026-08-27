@@ -29,6 +29,10 @@ from src.utils import read_json, redact_email
 
 IDENTIFIER_RE = re.compile(r"^([a-z0-9_-]+)-(\d+(?:\.\d+)*)")
 JA_ZIP_RE = re.compile(r".+-ja\.zip$", re.I)
+ACTIONABLE_FAIL_HINTS = (
+    "対応する日本語化ZIPが見つかりません",
+    "購入者メールアドレスがありません",
+)
 
 
 @dataclass
@@ -132,6 +136,11 @@ def resolve_sales_zip(
 
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def is_actionable_delivery_failure(reason: str) -> bool:
+    blob = reason or ""
+    return any(hint in blob for hint in ACTIONABLE_FAIL_HINTS)
 
 
 def buyer_greeting(first_name: str, last_name: str) -> str:
@@ -312,21 +321,13 @@ class OrderDeliveryService:
                 plan.item_id,
                 plan.skip_reason,
             )
+            if is_actionable_delivery_failure(plan.skip_reason):
+                return self._record_failure(plan, plan.skip_reason, dry_run=dry_run)
             return "skipped"
         assert plan.zip_path is not None
         reason = is_safe_sales_zip(plan.zip_path, self.settings.root, self.settings.delivery_max_zip_bytes)
         if reason:
-            self.logger.warning("ZIPを送れません: item=%s %s", plan.item_id, reason)
-            if not dry_run:
-                self.db.record_delivery(
-                    plan.unique_key,
-                    plan.order_item_id,
-                    item_id=plan.item_id,
-                    zip_path=str(plan.zip_path),
-                    status="failed",
-                    error_message=reason,
-                )
-            return "failed"
+            return self._record_failure(plan, reason, dry_run=dry_run, zip_path=str(plan.zip_path))
         zip_path = plan.zip_path.resolve()
         self.logger.info(
             "お届け準備: order=%s item=%s to=%s zip=%s dry_run=%s",
@@ -355,18 +356,54 @@ class OrderDeliveryService:
                 zip_path=str(zip_path),
                 status="sent",
             )
+            self.mailer.sale(
+                {
+                    "title": plan.title,
+                    "unique_key": plan.unique_key,
+                    "item_id": plan.item_id,
+                    "zip_name": zip_path.name,
+                    "buyer": redact_email(plan.buyer_email),
+                }
+            )
             return "sent"
         except Exception as exc:  # noqa: BLE001
-            self.logger.warning("お届け失敗: order=%s %s", plan.unique_key, type(exc).__name__)
-            self.db.record_delivery(
-                plan.unique_key,
-                plan.order_item_id,
-                item_id=plan.item_id,
+            return self._record_failure(
+                plan,
+                type(exc).__name__,
+                dry_run=False,
                 zip_path=str(zip_path),
-                status="failed",
-                error_message=type(exc).__name__,
             )
+
+    def _record_failure(
+        self,
+        plan: DeliveryPlan,
+        reason: str,
+        *,
+        dry_run: bool,
+        zip_path: str = "",
+    ) -> str:
+        self.logger.warning("お届け失敗: order=%s item=%s %s", plan.unique_key, plan.item_id, reason)
+        if dry_run:
             return "failed"
+        existing = self.db.get_delivery(plan.unique_key, plan.order_item_id)
+        self.db.record_delivery(
+            plan.unique_key,
+            plan.order_item_id,
+            item_id=plan.item_id,
+            zip_path=zip_path or (str(plan.zip_path) if plan.zip_path else ""),
+            status="failed",
+            error_message=reason,
+        )
+        if not existing:
+            self.mailer.sale_failed(
+                {
+                    "title": plan.title,
+                    "unique_key": plan.unique_key,
+                    "item_id": plan.item_id,
+                    "reason": reason,
+                }
+            )
+        return "failed"
 
     def watch(self, *, dry_run: bool = False) -> int:
         interval = max(60, self.settings.delivery_poll_seconds)
