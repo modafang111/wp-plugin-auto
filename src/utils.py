@@ -27,13 +27,18 @@ ALLOWED_HOSTS = {
     "translate.wordpress.org",
     "api.thebase.in",
     "api.openai.com",
+    "thebase.com",
+    "admin.thebase.com",
+    "developers.thebase.com",
     "thebase.in",
     "admin.thebase.in",
+    "developers.thebase.in",
 }
 
 ALLOWED_HOST_SUFFIXES = (
     ".wordpress.org",
     ".w.org",
+    ".thebase.com",
     ".thebase.in",
     ".base.shop",
     ".akamaized.net",

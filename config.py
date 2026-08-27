@@ -40,6 +40,7 @@ class Settings:
 
     base_login_email: str
     base_login_password: str
+    base_admin_url: str
     base_client_id: str
     base_client_secret: str
     base_redirect_uri: str
@@ -178,6 +179,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         skip_if_ja_percent=_as_int(env("SKIP_IF_JA_PERCENT"), 95),
         base_login_email=env("BASE_LOGIN_EMAIL"),
         base_login_password=env("BASE_LOGIN_PASSWORD"),
+        base_admin_url=env("BASE_ADMIN_URL", "https://admin.thebase.com/users/login"),
         base_client_id=env("BASE_CLIENT_ID"),
         base_client_secret=env("BASE_CLIENT_SECRET"),
         base_redirect_uri=env("BASE_REDIRECT_URI", "https://localhost/callback"),

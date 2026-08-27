@@ -42,12 +42,23 @@ WordPress.org 公式ディレクトリの無料プラグインを対象に、
 5) .env を編集する。パスワード・APIキーはここだけに書く。
    ソースコードへ直接書いてはいけない。.env は Git 管理外。
 
+   BASE は https://thebase.com/ から進める。最初に入れるのは次だけ。
+
+     BASE_LOGIN_EMAIL=（管理画面のメールアドレス）
+     BASE_LOGIN_PASSWORD=（管理画面のパスワード）
+     BASE_TEMPLATE_PRODUCT_URL=（既存商品の公開ページURL）
+     BASE_TEMPLATE_PRODUCT_ID=（わかる場合。URLの /items/ の後ろの数字でも可）
+     SHOP_PUBLIC_BASE_URL=（例: https://yourshop.base.shop）
+
+   client_id / client_secret / access_token は thebase.com のショップ画面では
+   発行されない。未記入のままでよい。
+
 6) 最初は必ず次のままにする。
 
      DRY_RUN=true
      BASE_PUBLISH_MODE=draft
 
-7) BASE 公式APIを使う場合、https://developers.thebase.in でアプリ申請し、
+7) 公式API（任意）を使う場合だけ、https://developers.thebase.com/ でアプリ申請し、
    次の scope を付与する。
 
      read_users read_items write_items
@@ -58,6 +69,7 @@ WordPress.org 公式ディレクトリの無料プラグインを対象に、
 
    表示されたURLをブラウザで開き、リダイレクト先の code= を貼り付ける。
    トークンは data\base_tokens.json に保存される（Git 対象外）。
+   APIの通信先は公式仕様どおり https://api.thebase.in/ のまま。
 
 
 2. 実行方法
@@ -97,17 +109,35 @@ BASE登録のみ（翻訳成果物がある前提）:
      python app.py --fetch-template
 
 
-3. BASE 公式API とブラウザ操作の分担
+3. BASE（thebase.com）と公式APIの分担
 ------------------------------------
-実装前に公式ドキュメント https://docs.thebase.in/api/ を確認した。
+ショップの入口は https://thebase.com/ 。
+管理画面ログインは https://admin.thebase.com/users/login 。
+（2023年3月に thebase.in から thebase.com へ移行。旧URLはリダイレクトされる）
 
-APIで実施する（優先）:
+ショップオーナーが .env に書く本線:
+
+  BASE_LOGIN_EMAIL
+  BASE_LOGIN_PASSWORD
+  BASE_TEMPLATE_PRODUCT_URL
+  BASE_TEMPLATE_PRODUCT_ID
+  SHOP_PUBLIC_BASE_URL
+
+BASE Developers API は任意。thebase.com のログインだけでは client_id は出ない。
+APIを使う場合のドキュメントは https://docs.thebase.in/api/
+通信先は https://api.thebase.in/
+
+APIで実施する（資格情報がある場合）:
   - テンプレート商品の参照 GET /1/items/detail/:item_id
   - 商品登録 POST /1/items/add（title, detail, price, stock, visible, identifier）
   - 画像登録 POST /1/items/add_image（公開URLのみ。ローカルファイル不可）
   - カテゴリ POST /1/item_categories/add
   - 登録確認 GET /1/items/detail/:item_id
   - 非公開/公開は visible=0/1（BASE_PUBLISH_MODE=draft|public）
+
+API資格情報が無い場合:
+  - DRY RUN で登録予定内容（商品名、説明、価格、ZIP）を生成する
+  - 実登録は管理画面側の確認待ち（要確認メール）
 
 APIに存在しない / 使わない:
   - デジタルコンテンツのファイルアップロード
@@ -118,8 +148,9 @@ APIに存在しない / 使わない:
     （公式エラー: デジタルコンテンツの商品は編集できません）
 
 Playwright:
+  - ログイン先は BASE_ADMIN_URL（初期値 https://admin.thebase.com/users/login）
   - ログインセッション保存は data\playwright\base_state.json
-  - CAPTCHA / 二段階認証 / 本人確認が出たら停止し
+  - CAPTCHA / 二段階認証 / パスキー確認 / 本人確認が出たら停止し
     「BASEで手動認証が必要です」とメールする。回避コードは持たない。
   - BASE_UPLOAD_DIGITAL_FILE=true でも、管理画面HTMLに依存する自動クリックは
     行わず、スクリーンショットを残して要確認にする（壊れにくい実装）。
@@ -247,7 +278,7 @@ SMTP未設定でも DRY_RUN は止めない（REQUIRE_EMAIL=false）。
 11. 安全対策
 ------------
 - ダウンロードした PHP は実行しない。データとして読むだけ。
-- 外部URLは許可ホストのみ（wordpress.org / downloads.wordpress.org / thebase.in / api.openai.com 等）。
+- 外部URLは許可ホストのみ（wordpress.org / thebase.com / admin.thebase.com / api.thebase.in / api.openai.com 等）。
 - 既存BASE商品を削除・変更する機能は無い。
 - 予期しない状態では止める。
 - 初期の公開状態は draft（非表示）。

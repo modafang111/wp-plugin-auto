@@ -1,6 +1,15 @@
 """BASE integration.
 
-Confirmed against official docs (https://docs.thebase.in/api/) at implementation time:
+Confirmed against official docs at implementation time:
+
+Shop owner entry (current):
+- https://thebase.com/
+- Login: https://admin.thebase.com/users/login
+- Developers portal: https://developers.thebase.com/
+- Domain moved from thebase.in to thebase.com in March 2023.
+
+API (still .in per official docs https://docs.thebase.in/api/):
+- OAuth and item APIs on https://api.thebase.in/
 
 API can:
 - OAuth2 access/refresh tokens
@@ -60,7 +69,7 @@ class BaseClient:
 
     def authorization_url(self) -> str:
         if not self.settings.base_client_id:
-            raise PipelineError("BASEログイン", "BASE_CLIENT_ID が未設定です。https://developers.thebase.in で申請してください。")
+            raise PipelineError("BASEログイン", "BASE_CLIENT_ID が未設定です。ショップログイン（thebase.com）だけでは発行されません。使う場合は https://developers.thebase.com/ で申請してください。")
         query = urlencode(
             {
                 "response_type": "code",
@@ -196,7 +205,7 @@ class BaseClient:
             context = browser.new_context(**context_kwargs)
             page = context.new_page()
             try:
-                page.goto("https://admin.thebase.in/", wait_until="domcontentloaded", timeout=45000)
+                page.goto(self.settings.base_admin_url, wait_until="domcontentloaded", timeout=45000)
                 html = page.content()
                 if self._needs_manual_auth(html, page.url):
                     shot = screenshot_dir / "base-auth-required.png"
@@ -237,7 +246,7 @@ class BaseClient:
     @staticmethod
     def _needs_manual_auth(html: str, url: str) -> bool:
         blob = f"{html} {url}".lower()
-        needles = ("captcha", "recaptcha", "二段階", "2段階", "本人確認", "認証コード", "sms", "one-time", "otp")
+        needles = ("captcha", "recaptcha", "二段階", "2段階", "本人確認", "認証コード", "認証番号", "sms", "one-time", "otp")
         return any(n in blob for n in needles)
 
     def _validate_listing(self, listing: dict[str, Any]) -> None:
