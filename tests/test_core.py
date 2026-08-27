@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 
 from config import Settings, load_settings
+from src.base_admin import forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
 from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
 from src.plugin_analyzer import extract_php_strings
@@ -64,6 +65,25 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(fixed["shop_url"], "https://123789.theshop.jp")
         self.assertEqual(fixed["product_url"], "https://123789.theshop.jp/items/55749997")
         self.assertEqual(settings.base_template_product_id, "55749997")
+
+    def test_two_factor_page_detection(self) -> None:
+        self.assertTrue(
+            is_two_factor_page(
+                "https://admin.thebase.com/users/verify_two_factor_auth_via_mail?url=",
+                "ログイン 認証番号入力 | BASE",
+            )
+        )
+        self.assertFalse(is_two_factor_page("https://admin.thebase.com/users/login", "ログイン | BASE"))
+        self.assertTrue(is_login_page("https://admin.thebase.com/users/login"))
+        self.assertFalse(is_login_page("https://admin.thebase.com/users/verify_two_factor_auth_via_mail"))
+
+    def test_template_item_is_protected(self) -> None:
+        self.assertTrue(is_protected_item_url("https://admin.thebase.com/shop_admin/items/55749997", "55749997"))
+        self.assertTrue(is_protected_item_url("https://admin.thebase.com/shop_admin/items/edit/55749997", "55749997"))
+        self.assertFalse(is_protected_item_url("https://admin.thebase.com/shop_admin/items/edit/123", "55749997"))
+        self.assertFalse(is_protected_item_url("https://admin.thebase.com/shop_admin/items/add", "55749997"))
+        self.assertTrue(forbidden_control_name("削除する"))
+        self.assertFalse(forbidden_control_name("登録する"))
 
 
 if __name__ == "__main__":

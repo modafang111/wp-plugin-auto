@@ -40,6 +40,7 @@ from urllib.parse import urlencode
 import requests
 
 from config import Settings
+from src.base_admin import BaseAdminClient, is_protected_item_url
 from src.exceptions import NeedsHumanReview, PipelineError
 from src.utils import read_json, write_json
 
@@ -133,8 +134,38 @@ class BaseClient:
         rows = data.get("item_categories") if isinstance(data, dict) else None
         return list(rows or []) if isinstance(rows, list) else []
 
-    def create_item(self, listing: dict[str, Any]) -> dict[str, Any]:
+    def create_item(
+        self,
+        listing: dict[str, Any],
+        zip_path: Path | None = None,
+        screenshot_dir: Path | None = None,
+        otp: str = "",
+    ) -> dict[str, Any]:
         self._validate_listing(listing)
+        template_id = str(listing.get("template_item_id") or self.settings.base_template_product_id or "")
+        zip_file = Path(zip_path or listing.get("sales_file") or "")
+        shots = screenshot_dir or (self.settings.screenshots_dir / "base-register")
+        if self._should_use_admin(zip_file):
+            admin = BaseAdminClient(self.settings, self.logger, otp=otp)
+            created = admin.create_digital_item(listing, zip_file, shots)
+            if template_id and created.get("item_id") == template_id:
+                raise PipelineError("BASE商品登録", "テンプレート商品と同じIDが返りました。登録を中止します。")
+            return created
+        if not self.can_write:
+            raise NeedsHumanReview(
+                "BASE商品登録",
+                "ショップログイン情報も BASE API トークンも無いため自動登録できません。",
+            )
+        return self._create_item_api(listing, template_id)
+
+    def _should_use_admin(self, zip_file: Path) -> bool:
+        if not (self.settings.base_login_email and self.settings.base_login_password):
+            return False
+        if zip_file.exists() and self.settings.base_upload_digital_file:
+            return True
+        return not self.can_write
+
+    def _create_item_api(self, listing: dict[str, Any], template_id: str) -> dict[str, Any]:
         payload = {
             "title": listing["title"],
             "detail": listing.get("detail") or "",
@@ -144,12 +175,14 @@ class BaseClient:
             "item_tax_type": str(listing.get("item_tax_type") or 1),
             "identifier": listing.get("identifier") or "",
         }
-        self.logger.info("BASE商品登録: title=%s visible=%s", payload["title"], payload["visible"])
+        self.logger.info("BASE API 商品登録: title=%s visible=%s", payload["title"], payload["visible"])
         result = self._api("POST", "/items/add", data=payload)
         item = result.get("item") if isinstance(result, dict) else None
         if not isinstance(item, dict) or not item.get("item_id"):
             raise PipelineError("BASE商品登録", f"商品登録レスポンスが不正です: {result}")
         item_id = str(item["item_id"])
+        if template_id and item_id == template_id:
+            raise PipelineError("BASE商品登録", "テンプレート商品と同じIDが返りました。登録を中止します。")
         for category_id in listing.get("category_ids") or []:
             self._api("POST", "/item_categories/add", data={"item_id": item_id, "category_id": str(category_id)})
         image_url = listing.get("image_url") or ""
@@ -169,85 +202,42 @@ class BaseClient:
             "item": item,
             "product_url": product_url,
             "raw": result,
+            "method": "api",
+            "file_uploaded": False,
         }
 
     def verify_item(self, item_id: str, expected_title: str) -> dict[str, Any]:
+        template_id = str(self.settings.base_template_product_id or "")
+        if template_id and item_id == template_id:
+            raise PipelineError("登録確認", "テンプレート商品を確認対象にしていません。")
+        if is_protected_item_url(f"/items/{item_id}", template_id):
+            raise PipelineError("登録確認", "テンプレート商品の編集はしません。")
+        if not self.can_read:
+            self.logger.info("登録確認: APIトークンが無いため item_id=%s title=%s をログに残します", item_id, expected_title)
+            return {"item_id": item_id, "title": expected_title}
         data = self.get_item(item_id)
         if not data:
-            raise PipelineError("登録確認", f"登録した商品を再取得できませんでした: {item_id}")
+            self.logger.warning("APIでは再取得できませんでした（デジタルコンテンツの可能性）。item_id=%s", item_id)
+            return {"item_id": item_id, "title": expected_title}
         item = data.get("item") if isinstance(data, dict) else data
         title = str((item or {}).get("title") or "")
-        if title != expected_title:
+        if title and title != expected_title:
             raise PipelineError("登録確認", f"登録確認で商品名が一致しません: {title}")
-        self.logger.info("登録確認: item_id=%s title=%s", item_id, title)
+        self.logger.info("登録確認: item_id=%s title=%s", item_id, title or expected_title)
         return item if isinstance(item, dict) else {}
 
-    def upload_digital_file(self, listing: dict[str, Any], zip_path: Path, screenshot_dir: Path) -> str:
-        """Best-effort Playwright upload. Stops on CAPTCHA/2FA. Never bypasses auth."""
+    def upload_digital_file(self, listing: dict[str, Any], zip_path: Path, screenshot_dir: Path, otp: str = "") -> str:
+        """Digital files are attached during Playwright create_item(). API cannot upload them."""
+        if listing.get("file_uploaded") or listing.get("method") == "playwright_admin":
+            return "already_uploaded"
         if not self.settings.base_upload_digital_file:
             return "skipped"
-        if not zip_path.exists():
-            raise PipelineError("BASE商品登録", f"販売ZIPがありません: {zip_path}")
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError as exc:
-            raise NeedsHumanReview("BASE商品登録", "Playwright が未インストールです。デジタルファイルは手動アップロードが必要です。") from exc
-
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-        state_path = self.settings.playwright_state_path
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context_kwargs: dict[str, Any] = {}
-            if state_path.exists():
-                context_kwargs["storage_state"] = str(state_path)
-            context = browser.new_context(**context_kwargs)
-            page = context.new_page()
-            try:
-                page.goto(self.settings.base_admin_url, wait_until="domcontentloaded", timeout=45000)
-                html = page.content()
-                if self._needs_manual_auth(html, page.url):
-                    shot = screenshot_dir / "base-auth-required.png"
-                    page.screenshot(path=str(shot), full_page=True)
-                    raise NeedsHumanReview(
-                        "BASEログイン",
-                        "BASEで手動認証が必要です（CAPTCHA / 二段階認証 / 本人確認）。自動回避は行いません。",
-                    )
-                if "login" in page.url.lower() or page.get_by_label(re.compile("メール|email", re.I)).count():
-                    if not self.settings.base_login_email or not self.settings.base_login_password:
-                        raise NeedsHumanReview("BASEログイン", "BASE_LOGIN_EMAIL / BASE_LOGIN_PASSWORD が未設定です。")
-                    self._login(page)
-                    html = page.content()
-                    if self._needs_manual_auth(html, page.url):
-                        shot = screenshot_dir / "base-auth-required.png"
-                        page.screenshot(path=str(shot), full_page=True)
-                        raise NeedsHumanReview("BASEログイン", "BASEで手動認証が必要です。")
-                context.storage_state(path=str(state_path))
-                shot = screenshot_dir / "base-digital-upload-needed.png"
-                page.screenshot(path=str(shot), full_page=True)
-                raise NeedsHumanReview(
-                    "BASE商品登録",
-                    "公式APIにデジタルコンテンツアップロードが無いため、管理画面へのファイル添付は人手確認とします。"
-                    f" 販売ZIP: {zip_path} スクリーンショット: {shot}",
-                )
-            finally:
-                context.close()
-                browser.close()
-
-    def _login(self, page: Any) -> None:
-        email = page.get_by_label(re.compile("メール|email", re.I)).first
-        password = page.get_by_label(re.compile("パスワード|password", re.I)).first
-        email.fill(self.settings.base_login_email)
-        password.fill(self.settings.base_login_password)
-        page.get_by_role("button", name=re.compile("ログイン|Login")).first.click()
-        page.wait_for_load_state("domcontentloaded")
-
-    @staticmethod
-    def _needs_manual_auth(html: str, url: str) -> bool:
-        blob = f"{html} {url}".lower()
-        needles = ("captcha", "recaptcha", "二段階", "2段階", "本人確認", "認証コード", "認証番号", "sms", "one-time", "otp")
-        return any(n in blob for n in needles)
+        raise NeedsHumanReview(
+            "BASE商品登録",
+            "公式APIにはデジタルコンテンツのファイルアップロードがありません。"
+            " BASE_LOGIN_EMAIL を設定し、管理画面からの新規登録を使ってください。"
+            f" 販売ZIP: {zip_path}",
+        )
 
     def _validate_listing(self, listing: dict[str, Any]) -> None:
         missing = [key for key in ("title", "price") if not listing.get(key) and listing.get(key) != 0]

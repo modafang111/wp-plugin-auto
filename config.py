@@ -53,6 +53,7 @@ class Settings:
     base_upload_digital_file: bool
     base_upload_generated_image: bool
     base_image_mode: str
+    playwright_headless: bool
 
     product_name_pattern: str
     product_price: str
@@ -192,6 +193,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         base_upload_digital_file=_as_bool(env("BASE_UPLOAD_DIGITAL_FILE"), False),
         base_upload_generated_image=_as_bool(env("BASE_UPLOAD_GENERATED_IMAGE"), False),
         base_image_mode=env("BASE_IMAGE_MODE", "wordpress_icon").lower() or "wordpress_icon",
+        playwright_headless=_as_bool(env("PLAYWRIGHT_HEADLESS"), True),
         product_name_pattern=env(
             "PRODUCT_NAME_PATTERN",
             "{plugin_name} WordPressプラグイン 日本語化ファイル",

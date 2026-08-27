@@ -57,6 +57,8 @@ class Mailer:
                 ("BASE商品名", info.get("base_title")),
                 ("販売価格", info.get("price")),
                 ("BASE商品URL", info.get("base_product_url") or "(DRY RUN のため未登録)"),
+                ("管理画面", info.get("admin_url") or ""),
+                ("登録方法", info.get("method") or ""),
                 ("販売用ZIP保存場所", info.get("output_zip")),
                 ("処理日時", info.get("processed_at")),
                 ("DRY_RUN", info.get("dry_run")),

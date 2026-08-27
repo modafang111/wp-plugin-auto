@@ -57,6 +57,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--base-auth", action="store_true", help="BASE OAuth 認可コードをトークンへ交換する")
     parser.add_argument("--fetch-template", action="store_true", help="テンプレート商品を取得してキャッシュする")
     parser.add_argument("--test-mail", action="store_true", help="NOTIFY_EMAIL へテストメールを送る")
+    parser.add_argument(
+        "--test-base",
+        action="store_true",
+        help="非公開のテスト商品を1件だけ実登録する（DRY_RUN を無視。テンプレートは変更しない）",
+    )
+    parser.add_argument(
+        "--otp",
+        default="",
+        help="BASEのメール認証番号（6桁）。--test-base または実登録時のみ。ログには残さない",
+    )
     return parser.parse_args(argv)
 
 
@@ -73,6 +83,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_base_auth(settings)
     if args.test_mail:
         return run_test_mail(settings)
+    if args.test_base:
+        return run_test_base(settings, otp=args.otp)
     if args.fetch_template:
         logger, log_path = setup_logger(settings.logs_dir, slug="template", secrets=settings.secret_values())
         logger.info("処理開始: テンプレート取得")
@@ -122,7 +134,11 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
     screenshot_dir = settings.screenshots_dir
     try:
         slug = extract_plugin_slug(url)
-        logger, log_path = setup_logger(settings.logs_dir, slug=slug, secrets=settings.secret_values())
+        secrets = list(settings.secret_values())
+        otp = getattr(args, "otp", "") or ""
+        if otp:
+            secrets.append(otp)
+        logger, log_path = setup_logger(settings.logs_dir, slug=slug, secrets=secrets)
         mailer = Mailer(settings, logger)
         logger.info("処理開始")
         logger.info("URL解析: %s -> %s", url, slug)
@@ -285,7 +301,14 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
         if not quality.ok:
             raise PipelineError("BASE商品登録", "品質エラーがあるため登録しません。")
 
-        created = base_client.create_item(listing)
+        created = base_client.create_item(
+            listing,
+            zip_path=Path(package["output_zip"]),
+            screenshot_dir=screenshot_dir,
+            otp=getattr(args, "otp", "") or "",
+        )
+        listing["method"] = created.get("method")
+        listing["file_uploaded"] = created.get("file_uploaded")
         db.upsert_job(
             info.slug,
             info.version,
@@ -296,7 +319,7 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
         )
         base_client.verify_item(created["item_id"], listing["title"])
         try:
-            if settings.base_upload_digital_file:
+            if settings.base_upload_digital_file and not created.get("file_uploaded"):
                 base_client.upload_digital_file(listing, Path(package["output_zip"]), screenshot_dir)
         except NeedsHumanReview as review:
             db.upsert_job(info.slug, info.version, status="needs_review", error_message=review.message)
@@ -437,11 +460,127 @@ def _notify_success(mailer: Mailer, settings: Settings, info: PluginInfo, qualit
             "base_title": (listing or {}).get("title") if listing else "",
             "price": (listing or {}).get("price") if listing else "",
             "base_product_url": (created or {}).get("product_url") if created else "",
+            "admin_url": (created or {}).get("admin_url") if created else "",
+            "method": (created or {}).get("method") if created else "",
             "output_zip": package.get("output_zip"),
             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "dry_run": settings.dry_run,
         }
     )
+
+
+def run_test_base(settings: Settings, otp: str = "") -> int:
+    """Register one unpublished digital item. Never edits/deletes the template product."""
+    settings.dry_run = False
+    settings.base_publish_mode = "draft"
+    settings.base_upload_digital_file = True
+    secrets = list(settings.secret_values())
+    if otp:
+        secrets.append(otp)
+    logger, log_path = setup_logger(settings.logs_dir, slug="test-base", secrets=secrets)
+    mailer = Mailer(settings, logger)
+    screenshot_dir = settings.screenshots_dir / "test-base"
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("処理開始: BASE 非公開テスト商品を1件登録します")
+    logger.info("テンプレート商品 %s は参照のみ。編集・削除はしません", settings.base_template_product_id or "(未設定)")
+    zip_path = settings.output_dir / "hello-dolly-1.7.2-ja.zip"
+    if not zip_path.exists():
+        import zipfile
+
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("README.txt", ("自動登録テスト用の日本語化ファイルです。\n" * 40))
+        logger.warning("既存の販売ZIPが無かったためテスト用ZIPを作りました: %s", zip_path)
+    preview = read_json(settings.output_dir / "hello-dolly-1.7.2-preview.json", {}) or {}
+    template_id = settings.base_template_product_id.strip() or "55749997"
+    detail = (
+        "これは自動登録テストの非公開商品です。ショップには表示しません。\n"
+        "WordPress公式プラグイン本体は含まれていません。日本語化ファイルの登録確認用です。\n\n"
+        + str(preview.get("detail") or "Hello Dolly の日本語化ファイルです。")
+    )
+    listing = {
+        "title": "【テスト・非公開】Hello Dollyの日本語化ファイル",
+        "detail": detail,
+        "price": int(preview.get("price") or settings.product_price or 550),
+        "stock": 99,
+        "visible": 0,
+        "item_tax_type": 1,
+        "identifier": f"test-hd-{datetime.now().strftime('%Y%m%d%H%M')}",
+        "category_ids": [],
+        "image_url": "",
+        "sales_file": str(zip_path),
+        "publish_mode": "draft",
+        "template_item_id": template_id,
+        "plugin_name": "Hello Dolly",
+        "plugin_version": "1.7.2",
+        "wordpress_url": "https://wordpress.org/plugins/hello-dolly/",
+    }
+    preview_path = settings.output_dir / "test-base-preview.json"
+    write_json(preview_path, listing)
+    logger.info("登録予定: title=%s price=%s zip=%s", listing["title"], listing["price"], zip_path)
+    client = BaseClient(settings, logger)
+    try:
+        created = client.create_item(listing, zip_path=zip_path, screenshot_dir=screenshot_dir, otp=otp)
+        if created.get("item_id") == template_id:
+            raise PipelineError("BASE商品登録", "テンプレート商品と同じIDです。登録結果を採用しません。")
+        client.verify_item(created["item_id"], listing["title"])
+        listing.update(
+            {
+                "base_product_id": created.get("item_id"),
+                "base_product_url": created.get("product_url"),
+                "admin_url": created.get("admin_url"),
+                "method": created.get("method"),
+                "dry_run": False,
+            }
+        )
+        write_json(preview_path, listing)
+        logger.info("非公開テスト商品を登録しました: item_id=%s", created.get("item_id"))
+        mailer.send(
+            "【BASE自動登録テスト完了・非公開】Hello Dolly",
+            "\n".join(
+                [
+                    "非公開のテスト商品を1件登録しました。テンプレート商品は変更していません。",
+                    f"商品名: {listing['title']}",
+                    f"価格: {listing['price']}",
+                    f"公開状態: 非公開（draft）",
+                    f"BASE商品ID: {created.get('item_id')}",
+                    f"公開URL（非公開のため出ない場合あり）: {created.get('product_url') or '(なし)'}",
+                    f"管理画面: {created.get('admin_url') or '(なし)'}",
+                    f"ファイル添付: {'あり' if created.get('file_uploaded') else 'なし（デジタルコンテンツメニュー無し）'}",
+                    f"ログ: {log_path}",
+                    "管理画面で内容を確認してください。自動削除はしません。",
+                    "",
+                ]
+            ),
+        )
+        logger.info("処理終了")
+        return 0
+    except NeedsHumanReview as exc:
+        logger.error("要確認 (%s): %s", exc.stage, exc.message)
+        mailer.needs_review(
+            {
+                "plugin_name": listing["title"],
+                "reason": exc.message,
+                "log_path": str(log_path),
+                "screenshot_path": str(screenshot_dir),
+                "output_zip": str(zip_path),
+                "retry": "認証番号が届いたら python app.py --test-base --otp で続きを実行",
+            }
+        )
+        return 1
+    except PipelineError as exc:
+        logger.error("エラー (%s): %s", exc.stage, exc.message)
+        mailer.error(
+            {
+                "plugin_name": listing["title"],
+                "stage": exc.stage,
+                "error": exc.message,
+                "log_path": str(log_path),
+                "screenshot_path": str(screenshot_dir),
+                "retry": "python app.py --test-base",
+            }
+        )
+        return 1
 
 
 def run_test_mail(settings: Settings) -> int:

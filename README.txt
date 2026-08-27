@@ -112,6 +112,18 @@ BASE登録のみ（翻訳成果物がある前提）:
 
      python app.py --test-mail
 
+非公開のテスト商品を1件だけ実登録（.env の DRY_RUN=true でも実行する）:
+
+     python app.py --test-base
+
+新しい環境からのログインでメール認証番号を求められた場合:
+
+     python app.py --test-base --otp 123456
+
+番号はログに書きません。一度ログインできたブラウザ状態は
+data\playwright\base_state.json に保存され、次回は番号なしで進めます。
+テンプレート商品の編集・削除はしません。
+
 
 3. BASE（thebase.com）と公式APIの分担
 ------------------------------------
@@ -140,8 +152,10 @@ APIで実施する（資格情報がある場合）:
   - 非公開/公開は visible=0/1（BASE_PUBLISH_MODE=draft|public）
 
 API資格情報が無い場合:
-  - DRY RUN で登録予定内容（商品名、説明、価格、ZIP）を生成する
-  - 実登録は管理画面側の確認待ち（要確認メール）
+  - ショップログイン（BASE_LOGIN_EMAIL / BASE_LOGIN_PASSWORD）で
+    Playwright が管理画面から新規商品を登録する
+  - 初期は BASE_PUBLISH_MODE=draft（非公開）
+  - python app.py --test-base で非公開のテスト商品を1件だけ実登録できる
 
 APIに存在しない / 使わない:
   - デジタルコンテンツのファイルアップロード
@@ -156,8 +170,12 @@ Playwright:
   - ログインセッション保存は data\playwright\base_state.json
   - CAPTCHA / 二段階認証 / パスキー確認 / 本人確認が出たら停止し
     「BASEで手動認証が必要です」とメールする。回避コードは持たない。
-  - BASE_UPLOAD_DIGITAL_FILE=true でも、管理画面HTMLに依存する自動クリックは
-    行わず、スクリーンショットを残して要確認にする（壊れにくい実装）。
+  - メール認証番号はユーザーが --otp で渡したときだけ入力する。
+  - 実画面（2026-08時点）の新規登録は「+ 商品を登録」→ 通常商品
+    （/shop_admin/items/add）。公開状態は「非公開」を選ぶ。
+  - 「デジタルコンテンツ」がメニューに出ないショップでは ZIP は未添付のまま
+    非公開商品だけ登録し、メールでその旨を知らせる。
+  - 削除ボタンは押さない。
 
 画像:
   - 公式APIは image_url（jpg/png/gif、4MB以内、推奨640x640）のみ。
