@@ -108,6 +108,10 @@ BASE登録のみ（翻訳成果物がある前提）:
 
      python app.py --fetch-template
 
+メール設定の送信テスト:
+
+     python app.py --test-mail
+
 
 3. BASE（thebase.com）と公式APIの分担
 ------------------------------------

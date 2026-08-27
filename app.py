@@ -56,6 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="同一versionの登録済み・十分日本語化済みでも続行")
     parser.add_argument("--base-auth", action="store_true", help="BASE OAuth 認可コードをトークンへ交換する")
     parser.add_argument("--fetch-template", action="store_true", help="テンプレート商品を取得してキャッシュする")
+    parser.add_argument("--test-mail", action="store_true", help="NOTIFY_EMAIL へテストメールを送る")
     return parser.parse_args(argv)
 
 
@@ -70,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.base_auth:
         return run_base_auth(settings)
+    if args.test_mail:
+        return run_test_mail(settings)
     if args.fetch_template:
         logger, log_path = setup_logger(settings.logs_dir, slug="template", secrets=settings.secret_values())
         logger.info("処理開始: テンプレート取得")
@@ -439,6 +442,30 @@ def _notify_success(mailer: Mailer, settings: Settings, info: PluginInfo, qualit
             "dry_run": settings.dry_run,
         }
     )
+
+
+def run_test_mail(settings: Settings) -> int:
+    logger, log_path = setup_logger(settings.logs_dir, slug="test-mail", secrets=settings.secret_values())
+    settings.require_email = True
+    mailer = Mailer(settings, logger)
+    logger.info("テストメール送信先: %s", settings.notify_email)
+    mailer.send(
+        "【テスト】BASE商品登録のメール設定",
+        "\n".join(
+            [
+                "base-wp-ja-auto のメール設定テストです。",
+                "このメールが届けば SMTP 設定は有効です。",
+                f"SMTP_HOST: {settings.smtp_host}",
+                f"SMTP_PORT: {settings.smtp_port}",
+                f"MAIL_FROM: {settings.mail_from or settings.smtp_user}",
+                f"NOTIFY_EMAIL: {settings.notify_email}",
+                f"ログ: {log_path}",
+                "",
+            ]
+        ),
+    )
+    logger.info("テストメールを送信しました")
+    return 0
 
 
 def run_base_auth(settings: Settings) -> int:

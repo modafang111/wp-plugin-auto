@@ -209,7 +209,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         smtp_host=env("SMTP_HOST"),
         smtp_port=_as_int(env("SMTP_PORT"), 587),
         smtp_user=env("SMTP_USER"),
-        smtp_password=env("SMTP_PASSWORD"),
+        smtp_password=env("SMTP_PASSWORD").replace(" ", ""),
         smtp_use_tls=_as_bool(env("SMTP_USE_TLS"), True),
         notify_email=env("NOTIFY_EMAIL"),
         mail_from=env("MAIL_FROM"),
