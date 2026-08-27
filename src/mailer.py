@@ -16,10 +16,20 @@ class Mailer:
         self.settings = settings
         self.logger = logger
 
-    def send(self, subject: str, body: str) -> None:
+    def send(
+        self,
+        subject: str,
+        body: str,
+        *,
+        to: str | None = None,
+        bcc: str | None = None,
+        attachments: list[Path] | None = None,
+        raise_on_error: bool | None = None,
+    ) -> None:
         self.logger.info("メール送信: %s", subject)
-        if not self.settings.notify_email or not self.settings.smtp_host:
-            message = "SMTP または NOTIFY_EMAIL が未設定のためメールは送信しません。"
+        dest = (to or self.settings.notify_email or "").strip()
+        if not dest or not self.settings.smtp_host:
+            message = "SMTP または宛先が未設定のためメールは送信しません。"
             if self.settings.require_email:
                 raise PipelineError("メール送信", message)
             self.logger.warning(message)
@@ -27,8 +37,18 @@ class Mailer:
         msg = EmailMessage()
         msg["Subject"] = subject
         msg["From"] = self.settings.mail_from or self.settings.smtp_user or self.settings.notify_email
-        msg["To"] = self.settings.notify_email
+        msg["To"] = dest
+        if bcc:
+            msg["Bcc"] = bcc
         msg.set_content(body)
+        for path in attachments or []:
+            data = path.read_bytes()
+            msg.add_attachment(
+                data,
+                maintype="application",
+                subtype="zip",
+                filename=path.name,
+            )
         try:
             if self.settings.smtp_port == 465:
                 server: smtplib.SMTP = smtplib.SMTP_SSL(self.settings.smtp_host, self.settings.smtp_port, timeout=30)
@@ -41,7 +61,8 @@ class Mailer:
                     server.login(self.settings.smtp_user, self.settings.smtp_password)
                 server.send_message(msg)
         except Exception as exc:  # noqa: BLE001
-            if self.settings.require_email:
+            fail_hard = self.settings.require_email if raise_on_error is None else raise_on_error
+            if fail_hard:
                 raise PipelineError("メール送信", f"メール送信に失敗しました: {exc}") from exc
             self.logger.warning("メール送信に失敗しました: %s", type(exc).__name__)
 

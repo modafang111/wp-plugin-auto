@@ -19,6 +19,7 @@ from src.database import Database
 from src.exceptions import NeedsHumanReview, PipelineError, SkipPlugin
 from src.logger import log_exception, setup_logger
 from src.mailer import Mailer
+from src.order_delivery import OrderDeliveryService, pick_test_zip
 from src.package_builder import PackageBuilder
 from src.plugin_analyzer import PluginAnalyzer
 from src.plugin_downloader import PluginDownloader
@@ -74,6 +75,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--update-image", metavar="ITEM_ID", help="指定した BASE 商品の画像だけ差し替える（テンプレートは不可）")
     parser.add_argument("--image", help="--update-image で使う PNG/JPG のパス")
+    parser.add_argument(
+        "--deliver-orders",
+        action="store_true",
+        help="売れた通常商品の日本語化ZIPを購入者へメールする（デジタルコンテンツApp未導入時）",
+    )
+    parser.add_argument("--watch", action="store_true", help="--deliver-orders を繰り返し実行する")
+    parser.add_argument(
+        "--test-deliver",
+        action="store_true",
+        help="NOTIFY_EMAIL へ販売ZIP付きのテストお届けメールを送る（購入者には送らない）",
+    )
     return parser.parse_args(argv)
 
 
@@ -105,6 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         write_json(settings.template_cache_path, template.to_dict())
         logger.info("テンプレート保存: %s source=%s", settings.template_cache_path, template.source)
         return 0
+    if args.test_deliver:
+        return run_test_deliver(settings)
+    if args.deliver_orders:
+        return run_deliver_orders(settings, dry_run=args.dry_run, watch=args.watch, otp=args.otp)
 
     urls = collect_urls(args, settings)
     if not urls:
@@ -617,6 +633,51 @@ def run_update_image(settings: Settings, item_id: str, image: str | None, otp: s
     except PipelineError as exc:
         logger.error("エラー (%s): %s", exc.stage, exc.message)
         return 1
+
+
+def run_test_deliver(settings: Settings) -> int:
+    logger, _log_path = setup_logger(settings.logs_dir, slug="test-deliver", secrets=settings.secret_values())
+    zip_path = pick_test_zip(settings.output_dir)
+    if zip_path is None:
+        print("output に *-ja.zip がありません。先に翻訳ZIPを作ってください。", file=sys.stderr)
+        return 2
+    db = Database(settings.db_path)
+    try:
+        mailer = Mailer(settings, logger)
+        OrderDeliveryService(settings, db, mailer, logger).send_test(zip_path)
+    finally:
+        db.close()
+    return 0
+
+
+def run_deliver_orders(settings: Settings, *, dry_run: bool, watch: bool, otp: str = "") -> int:
+    secrets = list(settings.secret_values())
+    if otp:
+        secrets.append(otp)
+    logger, _log_path = setup_logger(settings.logs_dir, slug="deliver-orders", secrets=secrets)
+    if dry_run:
+        logger.info("DRY RUN: 購入者へは送らず、対象注文だけ確認します")
+    db = Database(settings.db_path)
+    try:
+        mailer = Mailer(settings, logger)
+        service = OrderDeliveryService(settings, db, mailer, logger, otp=otp)
+        if watch:
+            try:
+                service.watch(dry_run=dry_run)
+            except KeyboardInterrupt:
+                logger.info("注文監視を終了します")
+            return 0
+        counts = service.run_once(dry_run=dry_run)
+        logger.info(
+            "お届け結果: orders=%s sent=%s skipped=%s failed=%s",
+            counts["orders"],
+            counts["sent"],
+            counts["skipped"],
+            counts["failed"],
+        )
+        return 1 if counts["failed"] else 0
+    finally:
+        db.close()
 
 
 def run_test_mail(settings: Settings) -> int:

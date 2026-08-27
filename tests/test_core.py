@@ -11,7 +11,8 @@ from src.base_template import normalize_shop_fields
 from src.exceptions import PipelineError
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import decide_already_translated, extract_php_strings
-from src.utils import extract_plugin_slug, placeholder_tokens, safe_extract_zip
+from src.order_delivery import is_safe_sales_zip, parse_order_plans, resolve_sales_zip
+from src.utils import extract_plugin_slug, placeholder_tokens, redact_email, safe_extract_zip
 
 
 class CoreTests(unittest.TestCase):
@@ -128,6 +129,73 @@ class CoreTests(unittest.TestCase):
             self.assertIsNotNone(path)
             self.assertTrue(path.exists())
             self.assertGreater(path.stat().st_size, 1000)
+
+    def test_redact_email(self) -> None:
+        self.assertEqual(redact_email("buyer@example.com"), "b***@example.com")
+        self.assertEqual(redact_email(""), "")
+
+    def test_sales_zip_must_be_ja_package_inside_project(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            output = root / "output"
+            output.mkdir()
+            good = output / "header-footer-code-manager-1.1.46-ja.zip"
+            with zipfile.ZipFile(good, "w") as zf:
+                zf.writestr("languages/plugin-ja.po", "x" * 2048)
+            self.assertEqual(is_safe_sales_zip(good, root, 20 * 1024 * 1024), "")
+            original = output / "original.zip"
+            original.write_bytes(good.read_bytes())
+            self.assertIn("販売用ZIP", is_safe_sales_zip(original, root, 20 * 1024 * 1024))
+
+    def test_resolve_sales_zip_from_job_and_title(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            output = root / "output"
+            output.mkdir()
+            zip_path = output / "header-footer-code-manager-1.1.46-ja.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("languages/plugin-ja.po", "x" * 2048)
+            jobs = [{"base_product_id": "155592749", "output_zip": str(zip_path), "plugin_slug": "header-footer-code-manager", "plugin_version": "1.1.46"}]
+            found = resolve_sales_zip(
+                item_id="155592749",
+                title="Header Footer Code Managerの日本語化ファイル",
+                identifier="header-footer-code-manager-1.1.46",
+                jobs=jobs,
+                output_dir=output,
+                delivery_map={},
+                root=root,
+            )
+            self.assertEqual(found, zip_path)
+            found_title = resolve_sales_zip(
+                item_id="999",
+                title="Header Footer Code Managerの日本語化ファイル",
+                identifier="",
+                jobs=[],
+                output_dir=output,
+                delivery_map={},
+                root=root,
+            )
+            self.assertEqual(found_title, zip_path)
+
+    def test_skip_cancelled_and_already_sent_orders(self) -> None:
+        header = {
+            "unique_key": "ABC123",
+            "buyer": {"mail_address": "buyer@example.com", "last_name": "山田", "first_name": "太郎"},
+            "orders": [
+                {"id": "1", "item_id": "10", "name": "Aの日本語化ファイル", "status": "cancelled"},
+                {"id": "2", "item_id": "11", "name": "Bの日本語化ファイル", "status": "ordered"},
+            ],
+        }
+        plans = parse_order_plans(
+            header,
+            jobs=[],
+            output_dir=Path("."),
+            delivery_map={},
+            root=Path("."),
+            already_sent={("ABC123", "2")},
+        )
+        self.assertIn("cancelled", plans[0].skip_reason)
+        self.assertIn("既に送信済み", plans[1].skip_reason)
 
 
 if __name__ == "__main__":

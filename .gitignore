@@ -28,6 +28,8 @@ backup/*
 data/*.db
 data/*.db-journal
 data/*.sqlite
+data/*.sqlite3
+data/delivery_map.json
 data/base_tokens.json
 data/base_template.json
 data/playwright/

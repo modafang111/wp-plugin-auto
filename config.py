@@ -77,6 +77,11 @@ class Settings:
     mail_from: str
     require_email: bool
 
+    delivery_mark_dispatched: bool
+    delivery_poll_seconds: int
+    delivery_lookback_days: int
+    delivery_max_zip_bytes: int
+
     max_zip_bytes: int
     max_uncompressed_bytes: int
     max_zip_files: int
@@ -121,6 +126,10 @@ class Settings:
     @property
     def template_cache_path(self) -> Path:
         return self.data_dir / "base_template.json"
+
+    @property
+    def delivery_map_path(self) -> Path:
+        return self.data_dir / "delivery_map.json"
 
     @property
     def playwright_state_path(self) -> Path:
@@ -216,6 +225,10 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         notify_email=env("NOTIFY_EMAIL"),
         mail_from=env("MAIL_FROM"),
         require_email=_as_bool(env("REQUIRE_EMAIL"), False),
+        delivery_mark_dispatched=_as_bool(env("DELIVERY_MARK_DISPATCHED"), True),
+        delivery_poll_seconds=_as_int(env("DELIVERY_POLL_SECONDS"), 300),
+        delivery_lookback_days=_as_int(env("DELIVERY_LOOKBACK_DAYS"), 14),
+        delivery_max_zip_bytes=_as_int(env("DELIVERY_MAX_ZIP_BYTES"), 20 * 1024 * 1024),
         max_zip_bytes=_as_int(env("MAX_ZIP_BYTES"), 50 * 1024 * 1024),
         max_uncompressed_bytes=_as_int(env("MAX_UNCOMPRESSED_BYTES"), 200 * 1024 * 1024),
         max_zip_files=_as_int(env("MAX_ZIP_FILES"), 8000),

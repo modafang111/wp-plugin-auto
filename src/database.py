@@ -76,6 +76,18 @@ CREATE TABLE IF NOT EXISTS translation_cache (
     created_at TEXT NOT NULL,
     UNIQUE(source_hash, context, provider)
 );
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    unique_key TEXT NOT NULL,
+    order_item_id TEXT NOT NULL,
+    item_id TEXT,
+    zip_path TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    error_message TEXT,
+    UNIQUE(unique_key, order_item_id)
+);
 """
 
 
@@ -190,4 +202,70 @@ class Database:
             """,
             (source_hash, source_text, context or "", translated, provider, _now()),
         )
+        self.conn.commit()
+
+    def job_by_item_id(self, item_id: str) -> dict[str, Any] | None:
+        if not item_id:
+            return None
+        row = self.conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE base_product_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (str(item_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def all_jobs_with_products(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE base_product_id IS NOT NULL AND base_product_id != ''
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_delivery(self, unique_key: str, order_item_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT * FROM deliveries
+            WHERE unique_key = ? AND order_item_id = ?
+            """,
+            (unique_key, order_item_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def record_delivery(
+        self,
+        unique_key: str,
+        order_item_id: str,
+        *,
+        item_id: str = "",
+        zip_path: str = "",
+        status: str,
+        error_message: str = "",
+    ) -> None:
+        now = _now()
+        existing = self.get_delivery(unique_key, order_item_id)
+        if existing:
+            self.conn.execute(
+                """
+                UPDATE deliveries
+                SET item_id = ?, zip_path = ?, status = ?, error_message = ?, created_at = ?
+                WHERE unique_key = ? AND order_item_id = ?
+                """,
+                (item_id, zip_path, status, error_message, now, unique_key, order_item_id),
+            )
+        else:
+            self.conn.execute(
+                """
+                INSERT INTO deliveries
+                (unique_key, order_item_id, item_id, zip_path, status, created_at, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (unique_key, order_item_id, item_id, zip_path, status, now, error_message),
+            )
         self.conn.commit()

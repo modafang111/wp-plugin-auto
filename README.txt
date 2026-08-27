@@ -112,6 +112,22 @@ BASE登録のみ（翻訳成果物がある前提）:
 
      python app.py --test-mail
 
+お届けメールのテスト（NOTIFY_EMAIL へZIP付き。購入者には送らない）:
+
+     python app.py --test-deliver
+
+売れた通常商品を購入者へメールする（1回）:
+
+     python app.py --deliver-orders
+
+対象確認だけ（送らない）:
+
+     python app.py --deliver-orders --dry-run
+
+5分おきに監視:
+
+     python app.py --deliver-orders --watch
+
 非公開で実登録（.env の DRY_RUN=true のまま、1件だけ下書き登録）:
 
      python app.py --register-draft "https://wordpress.org/plugins/classic-editor/"
@@ -291,6 +307,39 @@ WordPress に入れて確認する場合:
 サイト言語を日本語にして、該当プラグインの画面を見る。
 
 
+7.2 売れたあとの自動お届け
+--------------------------
+いちばん確実なのは BASE 公式の無料 App「デジタルコンテンツ販売」です。
+
+  https://apps.thebase.com/detail/20
+
+Apps からインストールすると、商品登録で「デジタルコンテンツ」が選べます。
+ZIP を商品に載せておくと、購入完了画面と購入者メールにダウンロードボタンが付きます。
+回数は3回、期限は72時間（注文詳細からリセット可）。ファイルは 1KB〜1GB。
+決済はクレジットカードと PAY ID あと払いのみ。複数のデジタル商品の同時購入は不可。
+
+このショップに App が入っていないあいだは、通常商品のまま売ります。
+その場合は次で、未対応の注文を見て日本語化ZIPを購入者へメールします。
+
+     python app.py --deliver-orders --watch
+
+Windows タスク スケジューラ例（5分おき）:
+
+     schtasks /create /tn "base-wp-ja-auto-deliver" /sc minute /mo 5 /tr "D:\dev\base-wp-ja-auto\.venv\Scripts\python.exe D:\dev\base-wp-ja-auto\app.py --deliver-orders"
+
+対象ZIPの対応づけ:
+
+  1) このプログラムが登録した商品は jobs.sqlite3 の base_product_id
+  2) 既存商品は data\delivery_map.json
+     例は data\templates\delivery_map.example.json
+
+購入者のメールアドレスはログに出しません。対応済への更新に失敗しても、
+同じ注文へZIPを再送しないよう deliveries テーブルで記録します。
+注文のキャンセルはしません。テンプレート商品も変更しません。
+
+公式デジタルコンテンツとして売っている注文は、二重送信しないようスキップします。
+
+
 8. ログと履歴
 -------------
 logs\ に実行ログ。スタックトレースも記録する。
@@ -396,3 +445,5 @@ backup\
   OPENAI_MODEL
   BASE_IMAGE_MODE
   BASE_UPLOAD_DIGITAL_FILE
+  DELIVERY_MARK_DISPATCHED
+  DELIVERY_POLL_SECONDS

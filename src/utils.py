@@ -75,6 +75,16 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def redact_email(value: str) -> str:
+    text = (value or "").strip()
+    if not text or "@" not in text:
+        return ""
+    local, _, domain = text.partition("@")
+    if not local or not domain:
+        return "[redacted]"
+    return f"{local[0]}***@{domain}"
+
+
 def strip_html(value: str) -> str:
     if not value:
         return ""

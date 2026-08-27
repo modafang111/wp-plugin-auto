@@ -18,8 +18,9 @@ import json
 import logging
 import re
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from config import Settings
@@ -30,6 +31,9 @@ from src.utils import write_json
 ADMIN_ORIGIN = "https://admin.thebase.com"
 ITEMS_LIST_URL = f"{ADMIN_ORIGIN}/shop_admin/items"
 ITEMS_ADD_URL = f"{ADMIN_ORIGIN}/shop_admin/items/add"
+ORDERS_LIST_URL = f"{ADMIN_ORIGIN}/shop_admin/orders/"
+PENDING_ORDER_STATUSES = {"ordered"}
+SKIP_ORDER_STATUSES = {"cancelled", "unpaid", "dispatched", "shipping"}
 FORBIDDEN_CLICK = (
     "削除",
     "削除する",
@@ -86,6 +90,100 @@ class BaseAdminClient:
         self.settings = settings
         self.logger = logger
         self.otp = (otp or "").strip()
+
+    @contextmanager
+    def logged_in_page(self, screenshot_dir: Path) -> Iterator[Any]:
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeout
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise NeedsHumanReview(
+                "BASE注文取得",
+                "Playwright が未インストールです。pip install playwright && python -m playwright install chromium",
+            ) from exc
+
+        state_path = self.settings.playwright_state_path
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        pending = _read_pending(self.settings)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=self.settings.playwright_headless,
+                args=["--disable-dev-shm-usage"],
+            )
+            context_kwargs: dict[str, Any] = {
+                "locale": "ja-JP",
+                "timezone_id": "Asia/Tokyo",
+                "viewport": {"width": 1600, "height": 1100},
+            }
+            if state_path.exists():
+                context_kwargs["storage_state"] = str(state_path)
+            context = browser.new_context(**context_kwargs)
+            page = context.new_page()
+            try:
+                self._login_or_resume(page, context, screenshot_dir, pending)
+                yield page
+                context.storage_state(path=str(state_path))
+                _clear_pending(self.settings)
+            except NeedsHumanReview:
+                self._snapshot(page, screenshot_dir / "base-needs-review.png")
+                try:
+                    context.storage_state(path=str(state_path))
+                except Exception:
+                    pass
+                raise
+            except PlaywrightTimeout as exc:
+                self._snapshot(page, screenshot_dir / "base-timeout.png")
+                raise NeedsHumanReview("BASE注文取得", f"管理画面の操作が時間切れです。 {exc}") from exc
+            finally:
+                context.close()
+                browser.close()
+
+    def list_order_summaries(self, page: Any, *, statuses: list[str] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        payload = {
+            "limit": limit,
+            "page": 1,
+            "words": "",
+            "order_by": "ordered_desc",
+            "ordered_from": None,
+            "ordered_to": None,
+            "status": statuses or [],
+            "payment": [],
+            "order_property": [],
+            "order_type": [],
+            "custom_shipping_method_ids": [],
+        }
+        data = admin_fetch_json(page, "POST", "/shop_admin/api/orders/summary", payload)
+        rows = data.get("order_summary") if isinstance(data, dict) else None
+        return list(rows or []) if isinstance(rows, list) else []
+
+    def get_order_detail(self, page: Any, unique_key: str, order_type: str = "order") -> dict[str, Any]:
+        if not re.fullmatch(r"[A-Za-z0-9]+", unique_key or ""):
+            raise PipelineError("BASE注文取得", "注文キーの形式が不正です。")
+        kind = order_type if re.fullmatch(r"[a-z_]+", order_type or "") else "order"
+        data = admin_fetch_json(page, "GET", f"/shop_admin/api/orders/view/{kind}/{unique_key}")
+        header = data.get("order_header") if isinstance(data, dict) else None
+        if not isinstance(header, dict):
+            raise PipelineError("BASE注文取得", "注文詳細を取得できませんでした。")
+        return header
+
+    def dispatch_order_items(self, page: Any, unique_key: str, order_ids: list[str], add_comment: str = "") -> None:
+        if not re.fullmatch(r"[A-Za-z0-9]+", unique_key or ""):
+            raise PipelineError("BASE注文更新", "注文キーの形式が不正です。")
+        ids = [str(i) for i in order_ids if str(i).isdigit()]
+        if not ids:
+            raise PipelineError("BASE注文更新", "対応済にする注文商品がありません。")
+        admin_fetch_json(
+            page,
+            "PUT",
+            f"/shop_admin/api/orders/dispatch/{unique_key}",
+            {
+                "order_ids": ids,
+                "add_comment": (add_comment or "")[:250],
+                "tracking_number": None,
+                "delivery_company_id": None,
+            },
+        )
 
     def create_digital_item(
         self,
@@ -615,6 +713,37 @@ class BaseAdminClient:
             page.screenshot(path=str(path), full_page=True)
         except Exception:
             pass
+
+
+def admin_fetch_json(page: Any, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Call the logged-in shop admin JSON API. Same endpoints the 注文画面 uses."""
+    if method not in {"GET", "POST", "PUT"}:
+        raise PipelineError("BASE注文取得", f"未対応のHTTPメソッドです: {method}")
+    if not path.startswith("/shop_admin/api/orders/"):
+        raise PipelineError("BASE注文取得", "注文API以外は呼びません。")
+    result = page.evaluate(
+        """async ({method, path, body}) => {
+            const opts = {method, credentials: 'include', headers: {}};
+            if (body !== null && body !== undefined) {
+                opts.headers['Content-Type'] = 'application/json';
+                opts.body = JSON.stringify(body);
+            }
+            const res = await fetch(path, opts);
+            const text = await res.text();
+            let json = null;
+            try { json = JSON.parse(text); } catch (e) { json = {raw: text.slice(0, 200)}; }
+            return {http: res.status, json};
+        }""",
+        {"method": method, "path": path, "body": body},
+    )
+    http = int((result or {}).get("http") or 0)
+    payload = (result or {}).get("json")
+    if not isinstance(payload, dict):
+        raise PipelineError("BASE注文取得", f"管理画面APIの応答が不正です HTTP {http}")
+    if http != 200 or payload.get("error"):
+        message = str(payload.get("message") or payload.get("error_description") or payload.get("error") or f"HTTP {http}")
+        raise PipelineError("BASE注文取得", f"管理画面APIエラー: {message}")
+    return payload
 
 
 def dump_page(page: Any, out: Path) -> None:
