@@ -8,6 +8,7 @@ import json
 import re
 import time
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -67,6 +68,7 @@ _NUM_PERCENT_PLACEHOLDER_RE = re.compile(
 # 訳文側で同じ数字の直後に残った「ただの %」。sprintf トークンではないもの。
 _BROKEN_PERCENT_AFTER_NUM_RE = r"(?:％|%%|パーセント|%(?![sdifFouxXeEgGc%]|[0-9]+\$))"
 HTML_TAG_RE = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>")
+HTML_URL_ATTR_RE = re.compile(r"""(?:href|src)\s*=\s*(['"])(.*?)\1""", re.I)
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
@@ -279,28 +281,58 @@ def repair_placeholders(source: str, dest: str) -> str:
     a literal ``100%``. Models rewrite that to ``100%`` / ``100％`` / ``100%%``
     / ``100パーセント``. This restores the original token with regex only when
     the msgid actually contains ``<digits>%s`` or ``<digits>%1$s``.
+
+    If dest is still missing tokens such as a third ``%s``, insert the missing
+    ones after the last surviving placeholder (or at the end) so sprintf
+    argument counts stay valid.
     """
     if not dest:
         return dest
-    if sorted(placeholder_tokens(source)) == sorted(placeholder_tokens(dest)):
-        return dest
     repaired = dest
-    for match in _NUM_PERCENT_PLACEHOLDER_RE.finditer(source or ""):
-        num = match.group("num")
-        ph = match.group("ph")
-        if re.search(rf"{re.escape(num)}{re.escape(ph)}", repaired):
-            continue
-        repaired, _n = re.subn(
-            rf"{re.escape(num)}\s*{_BROKEN_PERCENT_AFTER_NUM_RE}",
-            f"{num}{ph}",
-            repaired,
-            count=1,
-        )
-    return repaired
+    if sorted(placeholder_tokens(source)) != sorted(placeholder_tokens(repaired)):
+        for match in _NUM_PERCENT_PLACEHOLDER_RE.finditer(source or ""):
+            num = match.group("num")
+            ph = match.group("ph")
+            if re.search(rf"{re.escape(num)}{re.escape(ph)}", repaired):
+                continue
+            repaired, _n = re.subn(
+                rf"{re.escape(num)}\s*{_BROKEN_PERCENT_AFTER_NUM_RE}",
+                f"{num}{ph}",
+                repaired,
+                count=1,
+            )
+    src_ph = placeholder_tokens(source)
+    dst_ph = placeholder_tokens(repaired)
+    if sorted(src_ph) == sorted(dst_ph):
+        return repaired
+    leftover = Counter(dst_ph)
+    missing: list[str] = []
+    for ph in src_ph:
+        if leftover.get(ph, 0) > 0:
+            leftover[ph] -= 1
+        else:
+            missing.append(ph)
+    if not missing:
+        return repaired
+    insertion = " " + " ".join(missing)
+    last = None
+    for match in PLACEHOLDER_RE.finditer(repaired):
+        last = match
+    if last:
+        return repaired[: last.end()] + insertion + repaired[last.end() :]
+    return repaired.rstrip() + insertion
 
 
 def html_tag_names(text: str) -> list[str]:
-    return [m.group(0).lower() for m in HTML_TAG_RE.finditer(text or "")]
+    names: list[str] = []
+    for match in HTML_TAG_RE.finditer(text or ""):
+        name = match.group(1).lower()
+        names.append(f"/{name}" if match.group(0).startswith("</") else name)
+    return names
+
+
+def html_attr_urls(text: str) -> list[str]:
+    return [match.group(2) for match in HTML_URL_ATTR_RE.finditer(text or "")]
 
 
 def looks_like_url(text: str) -> bool:

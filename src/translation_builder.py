@@ -15,7 +15,7 @@ import polib
 
 from src.exceptions import PipelineError
 from src.plugin_analyzer import TranslatableString, extract_strings, strings_to_jsonable
-from src.utils import html_tag_names, looks_like_url, placeholder_tokens, repair_placeholders, write_json
+from src.utils import html_attr_urls, html_tag_names, looks_like_url, placeholder_tokens, repair_placeholders, write_json
 from src.wordpress import PluginInfo
 
 
@@ -244,6 +244,10 @@ class TranslationBuilder:
             dst_tags = html_tag_names(text)
             if sorted(src_tags) != sorted(dst_tags):
                 report.errors.append(f"HTMLタグ不一致: {item.msgid[:60]}")
+            src_urls = html_attr_urls(item.msgid)
+            dst_urls = html_attr_urls(text)
+            if sorted(src_urls) != sorted(dst_urls):
+                report.errors.append(f"HTMLのURL不一致: {item.msgid[:60]}")
             if len(text) > max(len(item.msgid) * 4, len(item.msgid) + 120):
                 report.warnings.append(f"異常に長い翻訳: {item.msgid[:60]}")
             by_source[item.msgid].add(text)

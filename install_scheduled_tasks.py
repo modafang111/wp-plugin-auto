@@ -21,7 +21,7 @@ function Install-BaseTask {
   Write-Output "installed $Name"
 }
 
-$registerTrigger = New-ScheduledTaskTrigger -Daily -At 07:00
+$registerTrigger = New-ScheduledTaskTrigger -Daily -At 07:30
 Install-BaseTask 'base-wp-ja-auto-register' (Join-Path $root 'register-next.bat') $registerTrigger
 
 $deliverTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)

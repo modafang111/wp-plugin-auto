@@ -1,12 +1,12 @@
 @echo off
 rem Create a daily Task Scheduler job for register-next.bat
 rem Usage: schedule-register.bat
-rem Optional time: schedule-register.bat 07:00
+rem Optional time: schedule-register.bat 07:30
 setlocal
 cd /d "%~dp0"
 set "BAT=%~dp0register-next.bat"
 set "WHEN=%~1"
-if "%WHEN%"=="" set "WHEN=07:00"
+if "%WHEN%"=="" set "WHEN=07:30"
 if not exist "%BAT%" (
   echo register-next.bat was not found.
   pause
