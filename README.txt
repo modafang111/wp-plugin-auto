@@ -84,6 +84,7 @@ Windows では次のバッチをダブルクリックしてもよい。
   deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
   sync-legacy.bat               過去の日本語化商品をお届け対象に含める
+  build-legacy-zips.bat         足りない過去商品の日本語化ZIPを作る（BASE登録しない）
   rewrite-legacy-pages.bat      テンプレート以外の過去商品ページを新書式へ更新
   register.bat                  次のプラグインを自動取得して公開登録
   register.bat URL              指定URLを翻訳して公開登録
@@ -470,9 +471,17 @@ Windows タスク スケジューラ（推奨。--watch は使わない）:
        git pull origin cursor/base-wp-ja-auto-8d86
        sync-legacy.bat
 
-  ZIP が output\<slug>-*-ja.zip に無い商品は送れません。足りない分は:
+  ZIP が output\<slug>-*-ja.zip に無い商品は送れません。足りない分は
+  このPCで作ります（販売ZIPは Git に含めません。リポジトリが公開のため）。
+
+       build-legacy-zips.bat
+
+  または:
 
        python app.py --sync-legacy --build-zips
+
+  GiveWP など文字列が多いプラグインは数十分かかることがあります。
+  終わると output\ に <slug>-<version>-ja.zip ができます。
 
   WordPress.org に無いプラグイン（例: AnsPress）は自動ではZIPを作れません。
   手元に販売ZIPがある場合は output\ へ <slug>-<version>-ja.zip として置いてから
