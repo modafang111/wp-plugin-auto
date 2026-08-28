@@ -83,6 +83,8 @@ Windows では次のバッチをダブルクリックしてもよい。
   test-deliver.bat              自分宛てにZIP付きお届けテスト
   deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
+  sync-legacy.bat               過去の日本語化商品をお届け対象に含める
+  rewrite-legacy-pages.bat      テンプレート以外の過去商品ページを新書式へ更新
   register.bat                  次のプラグインを自動取得して公開登録
   register.bat URL              指定URLを翻訳して公開登録
   discover.bat                  次の未出プラグインを一覧する（繰り返すと次へ進む）
@@ -458,12 +460,39 @@ Windows タスク スケジューラ（推奨。--watch は使わない）:
 対象ZIPの対応づけ:
 
   1) このプログラムが登録した商品は jobs.sqlite3 の base_product_id
-  2) 既存商品は data\delivery_map.json
+  2) 過去に手で出していた日本語化商品は data\templates\legacy_items.json
+     （WP-Members のテンプレート含む。テンプレートもお届け対象）
+  3) 実行時に data\delivery_map.json へ書き出す（Git 対象外）
      例は data\templates\delivery_map.example.json
+
+  過去商品を初めてお届け対象にするとき（このPCで1回）:
+
+       git pull origin cursor/base-wp-ja-auto-8d86
+       sync-legacy.bat
+
+  ZIP が output\<slug>-*-ja.zip に無い商品は送れません。足りない分は:
+
+       python app.py --sync-legacy --build-zips
+
+  WordPress.org に無いプラグイン（例: AnsPress）は自動ではZIPを作れません。
+  手元に販売ZIPがある場合は output\ へ <slug>-<version>-ja.zip として置いてから
+  もう一度 sync-legacy.bat を実行してください。
+
+  過去の商品ページ本文を、今回の日本語化ファイル書式（商品について / 対象プラグイン /
+  導入方法 / 注意事項）へ揃える。テンプレート商品 55749997 は更新しません。
+
+       rewrite-legacy-pages.bat
+
+  または:
+
+       python app.py --sync-legacy --rewrite-pages
+
+  プレビューは output\legacy-preview\ に残ります。テンプレートの本文を同じ書式に
+  したい場合は、そのプレビューを見て管理画面で人手で直してください。
 
 購入者のメールアドレスはログに出しません。対応済への更新に失敗しても、
 同じ注文へZIPを再送しないよう deliveries テーブルで記録します。
-注文のキャンセルはしません。テンプレート商品も変更しません。
+注文のキャンセルはしません。テンプレート商品の編集・削除はしません。
 
 公式デジタルコンテンツとして売っている注文は、二重送信しないようスキップします。
 
@@ -533,7 +562,8 @@ SMTP未設定でも DRY_RUN は止めない（REQUIRE_EMAIL=false）。
 ------------
 - ダウンロードした PHP は実行しない。データとして読むだけ。
 - 外部URLは許可ホストのみ（wordpress.org / thebase.com / admin.thebase.com / api.thebase.in / api.openai.com 等）。
-- 既存BASE商品を削除・変更する機能は無い。
+- 既存BASE商品を削除する機能は無い。テンプレート商品は編集しない。
+- --rewrite-pages はテンプレート以外の過去の日本語化商品の説明文だけ更新する。
 - 予期しない状態では止める。
 - 本番の公開状態は public。--test-base と --register-draft だけ非公開。
 

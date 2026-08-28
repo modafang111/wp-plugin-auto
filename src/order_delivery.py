@@ -23,7 +23,7 @@ from config import Settings
 from src.base_admin import ORDERS_LIST_URL, SKIP_ORDER_STATUSES, BaseAdminClient
 from src.database import Database
 from src.exceptions import PipelineError
-from src.mailer import Mailer
+from src.legacy_catalog import load_legacy_items, slug_for_order
 from src.utils import read_json, redact_email
 
 
@@ -71,7 +71,7 @@ def is_safe_sales_zip(path: Path, root: Path, max_bytes: int) -> str:
     return ""
 
 
-def load_delivery_map(path: Path) -> dict[str, Path]:
+def load_delivery_map(path: Path, *, root: Path | None = None) -> dict[str, Path]:
     raw = read_json(path, {}) or {}
     if not isinstance(raw, dict):
         return {}
@@ -84,9 +84,21 @@ def load_delivery_map(path: Path) -> dict[str, Path]:
             zip_value = value.get("zip") or value.get("path") or ""
         else:
             zip_value = value
-        if zip_value:
-            mapping[item_id] = Path(str(zip_value))
+        resolved = _map_zip_path(str(zip_value), root)
+        if resolved is not None:
+            mapping[item_id] = resolved
     return mapping
+
+
+def _map_zip_path(zip_value: str, root: Path | None) -> Path | None:
+    text = (zip_value or "").strip()
+    if not text:
+        return None
+    if "*" in text:
+        base = root or Path(".")
+        matches = sorted(base.glob(text), key=lambda p: p.stat().st_mtime, reverse=True)
+        return matches[0] if matches else None
+    return Path(text)
 
 
 def resolve_sales_zip(
@@ -98,10 +110,19 @@ def resolve_sales_zip(
     output_dir: Path,
     delivery_map: dict[str, Path],
     root: Path,
+    catalog_slug: str = "",
 ) -> Path | None:
     if item_id and item_id in delivery_map:
         mapped = delivery_map[item_id]
-        return mapped if mapped.is_absolute() else (root / mapped)
+        resolved = mapped if mapped.is_absolute() else (root / mapped)
+        if resolved.exists():
+            return resolved
+
+    slug_hint = (catalog_slug or "").strip().lower()
+    if slug_hint:
+        found = _latest_zip(output_dir, slug_hint)
+        if found is not None:
+            return found
 
     for job in jobs:
         if str(job.get("base_product_id") or "") != str(item_id):
@@ -131,7 +152,17 @@ def resolve_sales_zip(
             slug = re.sub(r"-\d+(?:\.\d+)*$", "", stem)
             if slug and (_norm(slug) in lowered or slug in ident or _norm(slug) in ident_norm):
                 return path
+            name_hint = _norm(title.replace("の日本語化ファイル", ""))
+            if slug and _norm(slug.replace("-", "")) and _norm(slug.replace("-", "")) in name_hint:
+                return path
     return None
+
+
+def _latest_zip(output_dir: Path, slug: str) -> Path | None:
+    if not slug or not output_dir.exists():
+        return None
+    matches = sorted(output_dir.glob(f"{slug}-*-ja.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0] if matches else None
 
 
 def _norm(text: str) -> str:
@@ -166,6 +197,8 @@ def parse_order_plans(
     delivery_map: dict[str, Path],
     root: Path,
     already_sent: set[tuple[str, str]],
+    catalog_slugs: dict[str, str] | None = None,
+    legacy_items: list | None = None,
 ) -> list[DeliveryPlan]:
     unique_key = str(header.get("unique_key") or "")
     buyer = header.get("buyer") if isinstance(header.get("buyer"), dict) else {}
@@ -209,6 +242,8 @@ def parse_order_plans(
                 output_dir=output_dir,
                 delivery_map=delivery_map,
                 root=root,
+                catalog_slug=(catalog_slugs or {}).get(item_id)
+                or slug_for_order(item_id=item_id, title=title, items=legacy_items or []),
             )
             plan.zip_path = zip_path
             if zip_path is None:
@@ -260,7 +295,18 @@ class OrderDeliveryService:
     def run_once(self, *, dry_run: bool = False) -> dict[str, int]:
         counts = {"sent": 0, "skipped": 0, "failed": 0, "orders": 0}
         jobs = self.db.all_jobs_with_products()
-        delivery_map = load_delivery_map(self.settings.delivery_map_path)
+        delivery_map = load_delivery_map(self.settings.delivery_map_path, root=self.settings.root)
+        example_map = load_delivery_map(self.settings.data_dir / "templates" / "delivery_map.example.json", root=self.settings.root)
+        for item_id, path in example_map.items():
+            delivery_map.setdefault(item_id, path)
+        legacy_items = load_legacy_items(self.settings)
+        catalog_slugs = {item.item_id: item.slug for item in legacy_items if item.slug}
+        for item in legacy_items:
+            if item.item_id in delivery_map:
+                continue
+            found = _latest_zip(self.settings.output_dir, item.slug)
+            if found is not None:
+                delivery_map[item.item_id] = found
         screenshot_dir = self.settings.screenshots_dir / "deliver-orders"
         with self.admin.logged_in_page(screenshot_dir) as page:
             page.goto(ORDERS_LIST_URL, wait_until="domcontentloaded", timeout=45000)
@@ -293,6 +339,8 @@ class OrderDeliveryService:
                     delivery_map=delivery_map,
                     root=self.settings.root,
                     already_sent=sent_ids,
+                    catalog_slugs=catalog_slugs,
+                    legacy_items=legacy_items,
                 )
                 dispatched_ids: list[str] = []
                 for plan in plans:

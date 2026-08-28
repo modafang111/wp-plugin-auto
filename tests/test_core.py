@@ -7,10 +7,17 @@ from types import SimpleNamespace
 
 from app import parse_args
 from config import Settings, load_settings
-from src.base_admin import forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
-from src.base_template import normalize_shop_fields
+from src.base_admin import BaseAdminClient, forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
+from src.base_template import BaseTemplateService, normalize_shop_fields
 from src.exceptions import PipelineError
 from src.database import Database
+from src.legacy_catalog import (
+    LegacyItem,
+    latest_zip_for_slug,
+    load_legacy_items,
+    slug_for_order,
+    structured_product_detail,
+)
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import TranslatableString, decide_already_translated, extract_php_strings
 from src.translation_builder import TranslationBuilder
@@ -411,6 +418,101 @@ class CoreTests(unittest.TestCase):
         args = parse_args(["--register", "--discover"])
         self.assertTrue(args.register)
         self.assertTrue(args.discover)
+
+    def test_legacy_catalog_maps_past_items_and_structured_copy(self) -> None:
+        settings = load_settings()
+        items = load_legacy_items(settings)
+        by_id = {item.item_id: item for item in items}
+        self.assertIn("55749997", by_id)
+        self.assertTrue(by_id["55749997"].protected)
+        self.assertEqual(by_id["55749997"].slug, "wp-members")
+        self.assertEqual(by_id["55749950"].slug, "duplicate-post")
+        self.assertEqual(
+            slug_for_order(item_id="55749886", title="Groupsの日本語化ファイル", items=items),
+            "groups",
+        )
+        self.assertEqual(
+            slug_for_order(item_id="999", title="adminimizeの日本語化ファイル", items=items),
+            "adminimize",
+        )
+        detail = structured_product_detail(
+            plugin_name="Duplicate Post",
+            slug="duplicate-post",
+            version="4.5",
+            official_url="https://wordpress.org/plugins/duplicate-post/",
+            short_description="投稿を複製します。",
+            created="2026-08-28",
+            settings=settings,
+        )
+        self.assertIn("■商品について", detail)
+        self.assertIn("■導入方法", detail)
+        self.assertIn("■注意事項", detail)
+        self.assertIn("Duplicate Post", detail)
+        self.assertNotIn("オンラインショッピング体験", detail)
+
+        info = SimpleNamespace(
+            name="Duplicate Post",
+            slug="duplicate-post",
+            version="4.5",
+            official_url="https://wordpress.org/plugins/duplicate-post/",
+            short_description="投稿を複製します。",
+            description="投稿を複製します。",
+        )
+        listing_detail = BaseTemplateService(settings, logging.getLogger("test")).render_description(
+            info, SimpleNamespace(), {"created": "2026-08-28", "po_name": "duplicate-post-ja.po", "mo_name": "duplicate-post-ja.mo"}
+        )
+        self.assertIn("■導入方法", listing_detail)
+        self.assertNotIn("オンラインショッピング体験", listing_detail)
+
+        admin = BaseAdminClient(settings, logging.getLogger("test"))
+        settings.base_template_product_id = "55749997"
+        with self.assertRaises(PipelineError):
+            admin.assert_item_copy_allowed("55749997")
+        with self.assertRaises(PipelineError):
+            admin.assert_item_copy_allowed("55749950", {"protected": True})
+        admin.assert_item_copy_allowed("55749950")
+
+        args = parse_args(["--sync-legacy", "--rewrite-pages", "--build-zips"])
+        self.assertTrue(args.sync_legacy)
+        self.assertTrue(args.rewrite_pages)
+        self.assertTrue(args.build_zips)
+        self.assertTrue(parse_args(["--test-deliver"]).test_deliver)
+
+    def test_legacy_catalog_zip_is_used_for_past_orders(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            output = root / "output"
+            output.mkdir()
+            zip_path = output / "duplicate-post-4.5-ja.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("languages/duplicate-post-ja.po", "x" * 2048)
+            self.assertEqual(latest_zip_for_slug(output, "duplicate-post"), zip_path)
+            items = [
+                LegacyItem(
+                    item_id="55749950",
+                    title="Duplicate Postの日本語化ファイル",
+                    slug="duplicate-post",
+                )
+            ]
+            header = {
+                "unique_key": "LEGACY1",
+                "buyer": {"mail_address": "buyer@example.com", "last_name": "山田", "first_name": "太郎"},
+                "orders": [
+                    {"id": "1", "item_id": "55749950", "name": "Duplicate Postの日本語化ファイル", "status": "ordered"},
+                ],
+            }
+            plans = parse_order_plans(
+                header,
+                jobs=[],
+                output_dir=output,
+                delivery_map={},
+                root=root,
+                already_sent=set(),
+                catalog_slugs={"55749950": "duplicate-post"},
+                legacy_items=items,
+            )
+            self.assertEqual(plans[0].zip_path, zip_path)
+            self.assertEqual(plans[0].skip_reason, "")
 
 
 if __name__ == "__main__":

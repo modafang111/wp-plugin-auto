@@ -18,6 +18,14 @@ from src.base_template import BaseTemplateService
 from src.database import Database
 from src.exceptions import NeedsHumanReview, PipelineError, SkipPlugin
 from src.logger import log_exception, setup_logger
+from src.legacy_catalog import (
+    detail_for_item,
+    latest_zip_for_slug,
+    load_legacy_items,
+    merge_scanned_items,
+    scan_public_ja_items,
+    write_delivery_map,
+)
 from src.mailer import Mailer
 from src.order_delivery import OrderDeliveryService, ensure_test_zip
 from src.package_builder import PackageBuilder
@@ -72,6 +80,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fetch-template", action="store_true", help="テンプレート商品を取得してキャッシュする")
     parser.add_argument("--test-mail", action="store_true", help="NOTIFY_EMAIL へテストメールを送る")
     parser.add_argument(
+        "--test-deliver",
+        action="store_true",
+        help="NOTIFY_EMAIL へ日本語化ZIP付きのお届けテストを送る（購入者には送らない）",
+    )
+    parser.add_argument(
         "--test-base",
         action="store_true",
         help="非公開のテスト商品を1件だけ実登録する（DRY_RUN を無視。テンプレートは変更しない）",
@@ -100,9 +113,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--watch", action="store_true", help="--deliver-orders を繰り返し実行する")
     parser.add_argument(
-        "--test-deliver",
+        "--sync-legacy",
         action="store_true",
-        help="NOTIFY_EMAIL へ販売ZIP付きのテストお届けメールを送る（購入者には送らない）",
+        help="過去の日本語化商品をお届け対象に含め、説明文プレビューを揃える",
+    )
+    parser.add_argument(
+        "--rewrite-pages",
+        action="store_true",
+        help="--sync-legacy と一緒に、テンプレート以外の過去商品ページを新書式へ更新する",
+    )
+    parser.add_argument(
+        "--build-zips",
+        action="store_true",
+        help="--sync-legacy と一緒に、足りない過去商品の日本語化ZIPを作る",
     )
     return parser.parse_args(argv)
 
@@ -148,6 +171,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_test_deliver(settings)
     if args.deliver_orders:
         return run_deliver_orders(settings, dry_run=args.dry_run, watch=args.watch, otp=args.otp)
+    if args.sync_legacy:
+        return run_sync_legacy(
+            settings,
+            rewrite_pages=args.rewrite_pages,
+            build_zips=args.build_zips,
+            otp=args.otp,
+        )
 
     urls = collect_urls(args, settings)
     if args.discover and not urls:
@@ -766,6 +796,137 @@ def run_test_deliver(settings: Settings) -> int:
         OrderDeliveryService(settings, db, mailer, logger).send_test(zip_path)
     finally:
         db.close()
+    return 0
+
+
+def run_sync_legacy(
+    settings: Settings,
+    *,
+    rewrite_pages: bool = False,
+    build_zips: bool = False,
+    otp: str = "",
+) -> int:
+    """Map past JA listings for auto-delivery and optionally rewrite their copy."""
+    from argparse import Namespace
+
+    from src.base_admin import BaseAdminClient
+
+    secrets = list(settings.secret_values())
+    if otp:
+        secrets.append(otp)
+    logger, log_path = setup_logger(settings.logs_dir, slug="sync-legacy", secrets=secrets)
+    template_id = str(settings.base_template_product_id or "").strip()
+    logger.info("過去の日本語化商品をお届け対象に含め、説明文プレビューを新書式で揃えます")
+    logger.info("テンプレート商品 %s はお届け対象です。商品ページは編集しません", template_id or "(未設定)")
+
+    items = load_legacy_items(settings)
+    scanned = scan_public_ja_items(settings, logger)
+    if scanned:
+        logger.info("公開カテゴリから日本語化商品を %s 件確認しました", len(scanned))
+        items = merge_scanned_items(items, scanned)
+    unmapped = [item for item in items if not item.slug]
+    if unmapped:
+        unknown_path = settings.output_dir / "legacy-preview" / "unmapped.json"
+        unknown_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(
+            unknown_path,
+            [{"item_id": item.item_id, "title": item.title} for item in unmapped],
+        )
+        logger.warning(
+            "slug 未設定の商品が %s 件あります。data/templates/legacy_items.json に追記してください: %s",
+            len(unmapped),
+            unknown_path,
+        )
+
+    if build_zips:
+        zip_args = Namespace(
+            force=True,
+            translate_only=True,
+            resume=False,
+            base_only=False,
+            otp=otp,
+            dry_run=True,
+            register=False,
+            register_draft=False,
+            discover=False,
+        )
+        for item in items:
+            if not item.slug:
+                continue
+            existing = latest_zip_for_slug(settings.output_dir, item.slug)
+            if existing is not None:
+                logger.info("ZIPあり: %s %s", item.item_id, existing.name)
+                continue
+            url = item.wordpress_url or official_plugin_url(item.slug)
+            logger.info("足りないZIPを作成します: %s %s", item.slug, url)
+            code = process_one(url, zip_args, settings)
+            if latest_zip_for_slug(settings.output_dir, item.slug) is None:
+                logger.warning("ZIPを作れませんでした: item_id=%s slug=%s code=%s", item.item_id, item.slug, code)
+
+    mapped = write_delivery_map(settings, items, settings.output_dir)
+    missing = list(mapped.get("missing") or [])
+    logger.info("お届け対応づけを保存しました: %s", settings.delivery_map_path)
+    for item_id in missing:
+        logger.warning("対応ZIPがまだありません: item_id=%s。--build-zips を実行してください", item_id)
+
+    preview_dir = settings.output_dir / "legacy-preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    wp = WordPressClient(SafeHttp(timeout=settings.http_timeout_seconds))
+    listings: list[tuple[object, dict]] = []
+    for item in items:
+        detail = detail_for_item(item, wp, settings)
+        title = item.title or f"{item.plugin_name()}の日本語化ファイル"
+        listing = {
+            "title": title,
+            "detail": detail,
+            "protected": item.protected or item.item_id == template_id,
+            "slug": item.slug,
+            "item_id": item.item_id,
+        }
+        listings.append((item, listing))
+        stem = f"{item.item_id}-{item.slug or 'unknown'}"
+        write_json(preview_dir / f"{stem}.json", listing)
+        (preview_dir / f"{stem}.txt").write_text(detail, encoding="utf-8")
+        logger.info("説明プレビュー: %s", preview_dir / f"{stem}.txt")
+
+    rewritten = 0
+    skipped_protected = 0
+    rewrite_failed = 0
+    if rewrite_pages:
+        logger.info("テンプレート以外の過去商品ページを新書式へ更新します（削除はしません）")
+        admin = BaseAdminClient(settings, logger, otp=otp)
+        screenshot_dir = settings.screenshots_dir / "sync-legacy"
+        try:
+            with admin.logged_in_page(screenshot_dir) as page:
+                for item, listing in listings:
+                    if listing.get("protected") or item.item_id == template_id:
+                        skipped_protected += 1
+                        logger.info("テンプレートのためページ更新をスキップ: %s", item.item_id)
+                        continue
+                    try:
+                        admin.apply_item_copy(page, item.item_id, listing, screenshot_dir / item.item_id)
+                        rewritten += 1
+                    except (PipelineError, NeedsHumanReview) as exc:
+                        rewrite_failed += 1
+                        logger.error("ページ更新失敗 %s: %s", item.item_id, exc.message)
+        except NeedsHumanReview as exc:
+            logger.error("要確認 (%s): %s", exc.stage, exc.message)
+            logger.info("ログ: %s", log_path)
+            return 1
+
+    logger.info(
+        "完了: items=%s zip不足=%s ページ更新=%s テンプレートスキップ=%s 更新失敗=%s ログ=%s",
+        len(items),
+        len(missing),
+        rewritten,
+        skipped_protected,
+        rewrite_failed,
+        log_path,
+    )
+    if rewrite_pages and rewrite_failed:
+        return 1
+    if build_zips and missing:
+        return 1
     return 0
 
 

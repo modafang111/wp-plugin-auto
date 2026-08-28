@@ -1,3 +1,16 @@
 {
-  "55749997": "output/wp-members-3.5.6-ja.zip"
+  "55749997": {
+    "slug": "wp-members",
+    "zip": "output/wp-members-3.5.6-ja.zip",
+    "note": "テンプレート商品。お届け対象。商品ページは編集しない。"
+  },
+  "55749950": {"slug": "duplicate-post"},
+  "55749886": {"slug": "groups"},
+  "55749756": {"slug": "anspress-question-answer"},
+  "55746464": {"slug": "give"},
+  "55096874": {"slug": "adminimize"},
+  "155597804": {"slug": "header-footer-code-manager"},
+  "155599205": {"slug": "hostinger"},
+  "155636967": {"slug": "astra-sites"},
+  "155643066": {"slug": "complianz-gdpr"}
 }

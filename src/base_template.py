@@ -274,25 +274,6 @@ class BaseTemplateService:
             "po_name": package.get("po_name") or f"{info.slug}-ja.po",
             "mo_name": package.get("mo_name") or f"{info.slug}-ja.mo",
         }
-        source = (template.detail or "").strip()
-        if source:
-            text = source
-            old_name = self.settings.base_template_plugin_name
-            old_version = self.settings.base_template_plugin_version
-            if old_name:
-                text = text.replace(old_name, info.name)
-            if old_version:
-                text = text.replace(old_version, info.version)
-            text = re.sub(
-                r"https?://(?:www\.)?wordpress\.org/plugins/[a-z0-9_-]+/?",
-                info.official_url,
-                text,
-                flags=re.I,
-            )
-            # Keep original line breaks / structure. Only fill leftover placeholders.
-            for key, value in values.items():
-                text = text.replace("{" + key + "}", str(value))
-            return text
         custom = self.settings.data_dir / "templates" / "product_description.txt"
         body = DEFAULT_DESCRIPTION
         if custom.exists():

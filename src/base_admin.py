@@ -321,6 +321,64 @@ class BaseAdminClient:
                 context.close()
                 browser.close()
 
+    def update_item_copy(self, item_id: str, listing: dict[str, Any], screenshot_dir: Path) -> None:
+        """Update title/detail of an existing item. Never edits the template. Never deletes."""
+        self.assert_item_copy_allowed(item_id, listing)
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        with self.logged_in_page(screenshot_dir) as page:
+            self.apply_item_copy(page, item_id, listing, screenshot_dir)
+
+    def assert_item_copy_allowed(self, item_id: str, listing: dict[str, Any] | None = None) -> None:
+        template_id = str(self.settings.base_template_product_id or "")
+        if not item_id.isdigit():
+            raise PipelineError("BASE商品更新", "商品IDが不正です。")
+        if item_id == template_id or bool((listing or {}).get("protected")):
+            raise PipelineError("BASE商品更新", "テンプレート商品の説明は変更しません。")
+
+    def apply_item_copy(self, page: Any, item_id: str, listing: dict[str, Any], screenshot_dir: Path) -> None:
+        """Fill title/detail on an already logged-in admin page. Never deletes."""
+        self.assert_item_copy_allowed(item_id, listing)
+        template_id = str(self.settings.base_template_product_id or "")
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        edit_url = f"{ADMIN_ORIGIN}/shop_admin/items/edit/{item_id}"
+        page.goto(edit_url, wait_until="domcontentloaded", timeout=45000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            page.wait_for_timeout(1500)
+        self._guard_template(page.url, template_id)
+        if str(item_id) not in page.url:
+            raise PipelineError("BASE商品更新", f"指定した商品の編集画面ではありません: {page.url}")
+        detail = listing.get("detail") or ""
+        title = listing.get("title") or ""
+        if title:
+            name = page.locator("#itemDetail_name")
+            if name.count():
+                name.first.fill(title)
+            else:
+                _fill_by_labels(page, ["商品名"], title)
+        if page.locator("#itemDetail_detail").count():
+            page.locator("#itemDetail_detail").first.fill(detail)
+        elif not _fill_by_labels(page, ["商品説明"], detail):
+            if page.locator("textarea").count():
+                page.locator("textarea").first.fill(detail)
+            else:
+                raise NeedsHumanReview("BASE商品更新", "商品説明の入力欄が見つかりません。")
+        save = _first_existing(
+            page,
+            [
+                lambda: page.get_by_role("button", name="変更を保存", exact=True),
+                lambda: page.get_by_role("button", name=re.compile(r"^変更を保存$")),
+            ],
+        )
+        if save is None:
+            raise NeedsHumanReview("BASE商品更新", "「変更を保存」が見つかりません。削除は押しません。")
+        self._safe_click(page, save, "変更を保存")
+        page.wait_for_timeout(2500)
+        self._guard_template(page.url, template_id)
+        self._snapshot(page, screenshot_dir / f"base-copy-updated-{item_id}.png")
+        self.logger.info("商品説明を更新しました: item_id=%s", item_id)
+
     def _login_or_resume(self, page: Any, context: Any, screenshot_dir: Path, pending: dict[str, Any]) -> None:
         state_path = self.settings.playwright_state_path
         if state_path.exists():
