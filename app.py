@@ -453,7 +453,7 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
 
         if args.translate_only:
             logger.info("翻訳のみ指定のため BASE 登録は行いません")
-            _notify_success(mailer, settings, info, quality, package, None, None)
+            _notify_success(mailer, settings, info, quality, package, None, None, zip_only=True)
             logger.info("処理終了")
             return 0
 
@@ -627,7 +627,17 @@ def _listing_text(listing: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _notify_success(mailer: Mailer, settings: Settings, info: PluginInfo, quality, package, listing, created) -> None:
+def _notify_success(
+    mailer: Mailer,
+    settings: Settings,
+    info: PluginInfo,
+    quality,
+    package,
+    listing,
+    created,
+    *,
+    zip_only: bool = False,
+) -> None:
     mailer.success(
         {
             "plugin_name": info.name,
@@ -644,6 +654,7 @@ def _notify_success(mailer: Mailer, settings: Settings, info: PluginInfo, qualit
             "publish_mode": settings.base_publish_mode,
             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "dry_run": settings.dry_run,
+            "zip_only": zip_only,
         }
     )
 

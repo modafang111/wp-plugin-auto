@@ -18,6 +18,7 @@ from src.legacy_catalog import (
     slug_for_order,
     structured_product_detail,
 )
+from src.mailer import Mailer
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import TranslatableString, decide_already_translated, extract_php_strings
 from src.translation_builder import TranslationBuilder
@@ -513,6 +514,28 @@ class CoreTests(unittest.TestCase):
             )
             self.assertEqual(plans[0].zip_path, zip_path)
             self.assertEqual(plans[0].skip_reason, "")
+
+    def test_zip_only_success_mail_is_not_a_base_registration(self) -> None:
+        settings = load_settings()
+        captured: dict[str, str] = {}
+
+        class CaptureMailer(Mailer):
+            def send(self, subject, body, **_kwargs):
+                captured["subject"] = subject
+                captured["body"] = body
+
+        CaptureMailer(settings, logging.getLogger("test")).success(
+            {
+                "zip_only": True,
+                "plugin_name": "GiveWP",
+                "plugin_version": "4.16.7.2",
+                "output_zip": "output/give-4.16.7.2-ja.zip",
+            }
+        )
+        self.assertIn("日本語化ZIP作成完了", captured["subject"])
+        self.assertNotIn("BASE商品登録完了", captured["subject"])
+        self.assertIn("新規登録はしていません", captured["body"])
+        self.assertNotIn("DRY_RUN", captured["body"])
 
 
 if __name__ == "__main__":

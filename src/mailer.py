@@ -67,6 +67,26 @@ class Mailer:
             self.logger.warning("メール送信に失敗しました: %s", type(exc).__name__)
 
     def success(self, info: dict) -> None:
+        if info.get("zip_only"):
+            subject = f"【日本語化ZIP作成完了】{info.get('plugin_name')} {info.get('plugin_version')}"
+            body = self._lines(
+                [
+                    ("プラグイン名", info.get("plugin_name")),
+                    ("バージョン", info.get("plugin_version")),
+                    ("WordPress公式URL", info.get("wordpress_url")),
+                    ("翻訳文字列数", info.get("translation_count")),
+                    ("未翻訳数", info.get("untranslated_count")),
+                    ("販売用ZIP保存場所", info.get("output_zip")),
+                    ("処理日時", info.get("processed_at")),
+                    (
+                        "内容",
+                        "既存ショップ商品のお届け用ZIPです。BASEへ新規登録はしていません。"
+                        "自動お届けに使うには、ショップPCの output\\ へこのZIPが必要です。",
+                    ),
+                ]
+            )
+            self.send(subject, body)
+            return
         subject = f"【BASE商品登録完了】{info.get('plugin_name')} {info.get('plugin_version')}"
         body = self._lines(
             [
