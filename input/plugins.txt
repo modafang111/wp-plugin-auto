@@ -1,0 +1,2 @@
+# WordPress公式プラグインの例。1行1URL。# で始まる行は無視します。
+https://wordpress.org/plugins/hello-dolly/

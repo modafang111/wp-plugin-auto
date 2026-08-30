@@ -1,0 +1,120 @@
+# Secrets and local env
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Runtime data (generated per machine)
+work/*
+!work/.gitkeep
+output/*
+!output/.gitkeep
+logs/*
+!logs/.gitkeep
+screenshots/*
+!screenshots/.gitkeep
+backup/*
+!backup/.gitkeep
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite3
+data/delivery_map.json
+data/base_tokens.json
+data/base_template.json
+data/playwright/
+data/sessions/
+data/*.xml
+input/discovered.txt
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
+
+# Cloud Agent local worktrees
+.cursor-cloud-worktrees/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# --- cloud-agent-sync ---
+# Source only. Do not commit generated files, secrets, or large binaries.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+*.venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Build / dist
+dist/
+build/
+out/
+*.egg
+
+# Logs and temp
+logs/
+log/
+tmp/
+temp/
+*.log
+*.tmp
+*.temp
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+token.json
+cookies.json
+
+# Large tools / media
+ffmpeg/
+ffprobe.exe
+ffplay.exe
+ffmpeg.exe
+ngrok.exe
+ngrok
+*.mp4
+*.mov
+*.wav
+*.zip
+*.7z
+*.rar
+
+# Windows / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.cursor/
+# --- end cloud-agent-sync ---
