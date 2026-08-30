@@ -15,7 +15,7 @@ import polib
 
 from src.exceptions import PipelineError
 from src.plugin_analyzer import TranslatableString, extract_strings, strings_to_jsonable
-from src.utils import html_attr_urls, html_tag_names, looks_like_url, placeholder_tokens, repair_placeholders, write_json
+from src.utils import html_attr_urls, html_tag_names, looks_like_url, placeholder_tokens, repair_html_markup, repair_placeholders, write_json
 from src.wordpress import PluginInfo
 
 
@@ -231,6 +231,11 @@ class TranslationBuilder:
                 translations[index] = repaired
                 text = repaired
                 report.warnings.append(f"プレースホルダーを自動修復: {item.msgid[:60]}")
+            html_repaired = repair_html_markup(item.msgid, text)
+            if html_repaired != text:
+                translations[index] = html_repaired
+                text = html_repaired
+                report.warnings.append(f"HTMLタグを自動修復: {item.msgid[:60]}")
             report.translated_count += 1
             if "\ufffd" in text or re_mojibake(text):
                 report.errors.append(f"文字化けの可能性: {item.msgid[:60]}")

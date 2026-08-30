@@ -323,6 +323,80 @@ def repair_placeholders(source: str, dest: str) -> str:
     return repaired.rstrip() + insertion
 
 
+def _html_name_key(match: re.Match[str]) -> str:
+    name = match.group(1).lower()
+    return f"/{name}" if match.group(0).startswith("</") else name
+
+
+def html_markup_matches(source: str, dest: str) -> bool:
+    return sorted(html_tag_names(source)) == sorted(html_tag_names(dest)) and sorted(html_attr_urls(source)) == sorted(
+        html_attr_urls(dest)
+    )
+
+
+def repair_html_markup(source: str, dest: str) -> str:
+    """Drop extra tags/URLs the translator invented, and restore source markup."""
+    if not dest or html_markup_matches(source, dest):
+        return dest
+    needed = Counter(html_tag_names(source))
+    dest_matches = list(HTML_TAG_RE.finditer(dest))
+    pieces: list[str] = []
+    last = 0
+    for match in dest_matches:
+        pieces.append(dest[last:match.start()])
+        key = _html_name_key(match)
+        if needed.get(key, 0) > 0:
+            needed[key] -= 1
+            pieces.append(match.group(0))
+        last = match.end()
+    pieces.append(dest[last:])
+    repaired = "".join(pieces)
+    if html_markup_matches(source, repaired):
+        return repaired
+
+    src_tag_map: dict[str, list[str]] = {}
+    for match in HTML_TAG_RE.finditer(source or ""):
+        src_tag_map.setdefault(_html_name_key(match), []).append(match.group(0))
+    already = Counter(html_tag_names(repaired))
+    insert: list[str] = []
+    for key, count in (Counter(html_tag_names(source)) - already).items():
+        insert.extend(src_tag_map.get(key, [])[:count])
+    if insert:
+        if html_tag_names(repaired):
+            repaired = repaired + "".join(insert)
+        else:
+            src_tags = [m.group(0) for m in HTML_TAG_RE.finditer(source or "")]
+            src_parts: list[str] = []
+            pos = 0
+            for match in HTML_TAG_RE.finditer(source or ""):
+                src_parts.append((source or "")[pos:match.start()])
+                pos = match.end()
+            src_parts.append((source or "")[pos:])
+            idx = max(range(len(src_parts)), key=lambda i: len(src_parts[i])) if src_parts else 0
+            parts = [""] * len(src_parts)
+            if parts:
+                parts[idx] = repaired
+            rebuilt = parts[0] if parts else repaired
+            for i, tag in enumerate(src_tags):
+                rebuilt += tag + (parts[i + 1] if i + 1 < len(parts) else "")
+            repaired = rebuilt
+    if html_markup_matches(source, repaired):
+        return repaired
+
+    src_tags = [m.group(0) for m in HTML_TAG_RE.finditer(source or "")]
+    dst_matches = list(HTML_TAG_RE.finditer(repaired))
+    if src_tags and len(src_tags) == len(dst_matches):
+        pieces = []
+        last = 0
+        for match, tag in zip(dst_matches, src_tags):
+            pieces.append(repaired[last:match.start()])
+            pieces.append(tag)
+            last = match.end()
+        pieces.append(repaired[last:])
+        repaired = "".join(pieces)
+    return repaired
+
+
 def html_tag_names(text: str) -> list[str]:
     names: list[str] = []
     for match in HTML_TAG_RE.finditer(text or ""):

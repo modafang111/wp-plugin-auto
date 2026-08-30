@@ -31,7 +31,7 @@ from src.order_delivery import OrderDeliveryService, ensure_test_zip
 from src.package_builder import PackageBuilder
 from src.plugin_analyzer import PluginAnalyzer
 from src.plugin_downloader import PluginDownloader
-from src.plugin_discovery import discover_plugins, import_discovered_txt
+from src.plugin_discovery import confirm_free_official, discover_plugins, import_discovered_txt
 from src.translation_builder import TranslationBuilder, dump_strings
 from src.translator import get_translator, load_extra_glossary
 from src.utils import SafeHttp, extract_plugin_slug, official_plugin_url, read_json, write_json
@@ -51,6 +51,11 @@ STAGE_ORDER = [
     "base_registered",
     "completed",
 ]
+
+PROCESS_OK = 0
+PROCESS_ERROR = 1
+PROCESS_NOT_FOUND = 2
+PROCESS_SKIPPED = 10
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -181,33 +186,19 @@ def main(argv: list[str] | None = None) -> int:
 
     urls = collect_urls(args, settings)
     if args.discover and not urls:
-        discovered = run_discover(settings, limit=args.limit, for_register=not args.discover_only)
         if args.discover_only:
-            return 0 if discovered else 1
-        urls = discovered
+            discovered = run_discover(settings, limit=args.limit, for_register=False)
+            return PROCESS_OK if discovered else PROCESS_ERROR
+        return run_register_from_discover(args, settings)
     if not urls:
-        logger, log_path = setup_logger(settings.logs_dir, slug="register", secrets=settings.secret_values())
-        message = "登録するプラグインが見つかりませんでした。URL指定か --discover が必要です。"
-        logger.error(message)
-        Mailer(settings, logger).error(
-            {
-                "plugin_name": "(未選択)",
-                "stage": "対象選択",
-                "error": message,
-                "log_path": str(log_path),
-                "retry": "python app.py --register --discover --limit 1",
-            }
-        )
-        print(
-            "プラグインURLを指定するか、--discover で WordPress.org から自動取得してください。",
-            file=sys.stderr,
-        )
-        return 2
+        return _no_plugin_found(settings)
 
-    exit_code = 0
+    exit_code = PROCESS_OK
     for url in urls:
         code = process_one(url, args, settings)
-        if code != 0:
+        if code == PROCESS_SKIPPED:
+            continue
+        if code != PROCESS_OK:
             exit_code = code
     return exit_code
 
@@ -231,6 +222,59 @@ def collect_urls(args: argparse.Namespace, settings: Settings) -> list[str]:
             if line and not line.startswith("#"):
                 urls.append(line)
     return urls
+
+
+def _no_plugin_found(settings: Settings) -> int:
+    logger, log_path = setup_logger(settings.logs_dir, slug="register", secrets=settings.secret_values())
+    message = "登録するプラグインが見つかりませんでした。URL指定か --discover が必要です。"
+    logger.error(message)
+    Mailer(settings, logger).error(
+        {
+            "plugin_name": "(未選択)",
+            "stage": "対象選択",
+            "error": message,
+            "log_path": str(log_path),
+            "retry": "python app.py --register --discover --limit 1",
+        }
+    )
+    print(
+        "プラグインURLを指定するか、--discover で WordPress.org から自動取得してください。",
+        file=sys.stderr,
+    )
+    return PROCESS_NOT_FOUND
+
+
+def run_register_from_discover(args: argparse.Namespace, settings: Settings) -> int:
+    """Register DISCOVER_LIMIT plugins, skipping paid/ineligible ones in the same run."""
+    want = args.limit if args.limit is not None else settings.discover_limit
+    want = max(1, min(int(want), 20))
+    processed = 0
+    seen: set[str] = set()
+    max_tries = max(want * 15, min(settings.discover_max_pages, 80))
+    logger, _log_path = setup_logger(settings.logs_dir, slug="register", secrets=settings.secret_values())
+    for attempt in range(1, max_tries + 1):
+        remaining = want - processed
+        batch = run_discover(settings, limit=remaining, for_register=True)
+        fresh = [url for url in batch if url not in seen]
+        if not fresh:
+            break
+        for url in fresh:
+            seen.add(url)
+            logger.info("自動取得 %s/%s 件目を処理します: %s", processed + 1, want, url)
+            code = process_one(url, args, settings)
+            if code == PROCESS_SKIPPED:
+                logger.info("対象外のため次の無料プラグインを探します: %s", url)
+                continue
+            if code != PROCESS_OK:
+                return code
+            processed += 1
+            if processed >= want:
+                return PROCESS_OK
+        if attempt == max_tries:
+            break
+    if processed == 0:
+        return _no_plugin_found(settings)
+    return PROCESS_OK
 
 
 def run_discover(settings: Settings, limit: int | None = None, *, for_register: bool = False) -> list[str]:
@@ -263,6 +307,22 @@ def run_discover(settings: Settings, limit: int | None = None, *, for_register: 
                         wordpress_url=str(row.get("url") or ""),
                         status="skipped_already_translated",
                         error_message="公式日本語 language pack が公開されています。",
+                    )
+                    continue
+                skip_reason = confirm_free_official(wp, slug)
+                if skip_reason:
+                    logger.info(
+                        "キューの %s は対象外のため次の無料プラグインを探します: %s",
+                        slug,
+                        skip_reason,
+                    )
+                    db.upsert_job(
+                        slug,
+                        version or "unknown",
+                        plugin_name=str(row.get("name") or slug),
+                        wordpress_url=str(row.get("url") or ""),
+                        status="skipped_not_eligible",
+                        error_message=skip_reason,
                     )
                     continue
                 urls.append(str(row["url"]))
@@ -340,7 +400,7 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
         if existing_success and not args.force and not args.translate_only:
             logger.info("同一slug・同一バージョンは登録済みのためスキップします")
             db.upsert_job(info.slug, info.version, status="skipped_duplicate", plugin_name=info.name, wordpress_url=info.official_url)
-            return 0
+            return PROCESS_SKIPPED
         previous = db.latest_job(info.slug)
         if previous and previous.get("plugin_version") != info.version:
             logger.info("更新版を検出: %s -> %s", previous.get("plugin_version"), info.version)
@@ -397,7 +457,7 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
                 }
             )
             logger.info("処理終了")
-            return 0
+            return PROCESS_SKIPPED
 
         translation_dir = work / "translation"
         strings_path = work / "strings.json"
@@ -526,9 +586,9 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
         if logger:
             logger.info("対象外: %s", exc.message)
         db.upsert_job(slug, "unknown", plugin_name=slug, wordpress_url=official_plugin_url(slug), status="skipped_not_eligible", error_message=exc.message)
-        if mailer:
+        if mailer and not getattr(args, "discover", False):
             mailer.needs_review({"plugin_name": slug, "reason": exc.message, "log_path": str(log_path)})
-        return 0
+        return PROCESS_SKIPPED
     except NeedsHumanReview as exc:
         if logger:
             logger.error("要確認 (%s): %s", exc.stage, exc.message)

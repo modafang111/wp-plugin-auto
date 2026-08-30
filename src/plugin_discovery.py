@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from config import Settings
 from src.database import Database
+from src.exceptions import SkipPlugin
 from src.plugin_analyzer import decide_already_translated
 from src.utils import extract_plugin_slug, official_plugin_url
 from src.wordpress import WordPressClient
@@ -53,6 +54,23 @@ def plugin_has_ja_pack(plugin: dict[str, Any]) -> bool:
         if lang in {"ja", "ja_jp"} or lang.startswith("ja"):
             return True
     return False
+
+
+def is_paid_or_commercial_reason(reason: str) -> bool:
+    text = reason or ""
+    return "有料" in text or "商用" in text
+
+
+def confirm_free_official(wp: Any, slug: str) -> str:
+    """Return a skip reason if plugin_information says the plugin is paid/off-directory."""
+    fetch = getattr(wp, "fetch_plugin", None)
+    if not callable(fetch) or not slug:
+        return ""
+    try:
+        fetch(slug)
+    except SkipPlugin as exc:
+        return exc.message
+    return ""
 
 
 def eligibility_reason(plugin: dict[str, Any], *, min_installs: int, skip_slugs: set[str]) -> str:
@@ -166,6 +184,8 @@ def discover_plugins(
                         skipped_pack += 1
                     else:
                         skipped_other += 1
+                        if is_paid_or_commercial_reason(reason):
+                            logger.info("スキップ %s: %s 次の無料プラグインを探します", slug, reason)
                     continue
                 if check_translation_api:
                     pack = wp.japanese_language_pack(slug, version)
@@ -184,6 +204,11 @@ def discover_plugins(
                         skipped_other += 1
                         logger.info("スキップ %s: %s", slug, already_reason)
                         continue
+                paid_reason = confirm_free_official(wp, slug)
+                if paid_reason:
+                    skipped_other += 1
+                    logger.info("スキップ %s: %s 次の無料プラグインを探します", slug, paid_reason)
+                    continue
                 installs = plugin.get("active_installs") if isinstance(plugin.get("active_installs"), int) else None
                 candidate = DiscoveredPlugin(
                     slug=slug,

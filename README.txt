@@ -195,6 +195,7 @@ URLを毎回指定しなくてもよい。WordPress.org 公式ディレクトリ
 （api.wordpress.org の query_plugins）から、次の条件で拾う。
 
   - 無料（downloads.wordpress.org の公式ZIPがある）
+  - 有料・商用は対象外。探すときは同じ実行で次の無料プラグインへ進む
   - 公式日本語 language pack が無い
   - 公式日本語の完了率が SKIP_IF_JA_PERCENT 未満
   - このPCの jobs.sqlite3 で同じバージョンを処理済みでない
@@ -205,6 +206,7 @@ URLを毎回指定しなくてもよい。WordPress.org 公式ディレクトリ
 候補を先に見るだけなら discover.bat 。
 discover.bat を繰り返すと、前回出したプラグインは飛ばして次の新規を出す。
 register.bat は未登録キューの先頭から1件処理する。
+キューや一覧が有料だった場合はスキップし、次の無料プラグインを探してから登録する。
 
 
 3. BASE（thebase.com）と公式APIの分担
@@ -561,7 +563,8 @@ SMTP未設定でも DRY_RUN は止めない（REQUIRE_EMAIL=false）。
    data\playwright\base_state.json を消してから再実行してもよい。
 
 5) 対象外（有料・公式ZIPが無い等）:
-   自動では処理しない。理由はログとメールに残る。
+   自動では処理しない。--discover / register.bat のときは次の無料プラグインを探す。
+   URL指定時は理由をログとメールに残す。
 
 6) ZIPが巨大 / ZIP Slip:
    上限は .env の MAX_ZIP_BYTES 等。危険なエントリは展開しない。

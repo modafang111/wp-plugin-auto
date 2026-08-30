@@ -13,7 +13,7 @@ from config import Settings
 from src.database import Database
 from src.exceptions import PipelineError
 from src.plugin_analyzer import TranslatableString
-from src.utils import looks_like_code, looks_like_url, placeholder_tokens, repair_placeholders, sha256_text
+from src.utils import looks_like_code, looks_like_url, placeholder_tokens, repair_html_markup, repair_placeholders, sha256_text
 
 
 GLOSSARY = {
@@ -156,15 +156,15 @@ class Translator(ABC):
                 continue
             cached = self.db.cache_get(sha256_text(item.msgid), item.msgctxt, self.name)
             if cached is not None:
-                repaired = repair_placeholders(item.msgid, cached)
+                repaired = repair_html_markup(item.msgid, repair_placeholders(item.msgid, cached))
                 if repaired != cached:
                     self.db.cache_put(sha256_text(item.msgid), item.msgid, item.msgctxt, repaired, self.name)
-                    self.logger.info("キャッシュのプレースホルダーを修復: %s", item.msgid[:60])
+                    self.logger.info("キャッシュのマークアップを修復: %s", item.msgid[:60])
                 results[index] = repaired
                 continue
             glossary = GLOSSARY.get(item.msgid) or GLOSSARY.get(item.msgid.strip())
             if glossary:
-                repaired = repair_placeholders(item.msgid, glossary)
+                repaired = repair_html_markup(item.msgid, repair_placeholders(item.msgid, glossary))
                 results[index] = repaired
                 self.db.cache_put(sha256_text(item.msgid), item.msgid, item.msgctxt, repaired, self.name)
                 continue
@@ -176,7 +176,7 @@ class Translator(ABC):
             chunk = pending[offset : offset + batch_size]
             translated = self.translate_batch(chunk)
             for index, item in chunk:
-                text = repair_placeholders(item.msgid, translated.get(index, ""))
+                text = repair_html_markup(item.msgid, repair_placeholders(item.msgid, translated.get(index, "")))
                 results[index] = text
                 if text:
                     self.db.cache_put(sha256_text(item.msgid), item.msgid, item.msgctxt, text, self.name)

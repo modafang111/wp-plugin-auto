@@ -182,6 +182,9 @@ class WordPressClient:
             "request[fields][active_installs]": "1",
             "request[fields][language_packs]": "1",
             "request[fields][short_description]": "1",
+            "request[fields][download_link]": "1",
+            "request[fields][business_model]": "1",
+            "request[fields][homepage]": "1",
             "request[locale]": "ja",
         }
         url = PLUGIN_API + "?" + urlencode(params)

@@ -9,7 +9,7 @@ from app import parse_args
 from config import Settings, load_settings
 from src.base_admin import BaseAdminClient, forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
 from src.base_template import BaseTemplateService, normalize_shop_fields
-from src.exceptions import PipelineError
+from src.exceptions import PipelineError, SkipPlugin
 from src.database import Database
 from src.legacy_catalog import (
     LegacyItem,
@@ -22,7 +22,13 @@ from src.mailer import Mailer
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import TranslatableString, decide_already_translated, extract_php_strings
 from src.translation_builder import TranslationBuilder
-from src.plugin_discovery import discover_plugins, eligibility_reason, plugin_has_ja_pack
+from src.plugin_discovery import (
+    confirm_free_official,
+    discover_plugins,
+    eligibility_reason,
+    is_paid_or_commercial_reason,
+    plugin_has_ja_pack,
+)
 from src.order_delivery import (
     ensure_test_zip,
     is_actionable_delivery_failure,
@@ -30,7 +36,7 @@ from src.order_delivery import (
     parse_order_plans,
     resolve_sales_zip,
 )
-from src.utils import extract_plugin_slug, placeholder_tokens, redact_email, repair_placeholders, safe_extract_zip
+from src.utils import extract_plugin_slug, html_attr_urls, html_tag_names, placeholder_tokens, redact_email, repair_html_markup, repair_placeholders, safe_extract_zip
 
 
 class CoreTests(unittest.TestCase):
@@ -116,6 +122,27 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(report.ok, report.errors)
         self.assertIn("100%s", translations[0])
         self.assertTrue(any(w.startswith("プレースホルダーを自動修復") for w in report.warnings))
+
+    def test_quality_check_repairs_invented_html_link(self) -> None:
+        src = (
+            "Upgrade to Pro</a> for more features like <b>reCAPTCHA, Two Factor Auth, "
+            "Rename wp-admin and wp-login.php pages, Email based PasswordLess</b> login "
+            "and more. These features will improve your website's security."
+        )
+        dst = (
+            '<a href="https://loginizer.com/pricing?utm_source=stats_block">Proにアップグレード</a>'
+            "して、<b>reCAPTCHA、二要素認証、wp-admin と wp-login.php ページの名前変更、"
+            "メールベースのパスワードレス</b>ログインなどの機能を追加してください。"
+        )
+        repaired = repair_html_markup(src, dst)
+        self.assertEqual(sorted(html_tag_names(repaired)), sorted(html_tag_names(src)))
+        self.assertEqual(html_attr_urls(repaired), [])
+        self.assertIn("Proにアップグレード", repaired)
+        items = [TranslatableString(msgid=src)]
+        translations = [dst]
+        report = TranslationBuilder(logging.getLogger("test")).quality_check(items, translations)
+        self.assertTrue(report.ok, report.errors)
+        self.assertTrue(any(w.startswith("HTMLタグを自動修復") for w in report.warnings))
 
     def test_write_catalog_saves_plural_entries(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -419,6 +446,78 @@ class CoreTests(unittest.TestCase):
         args = parse_args(["--register", "--discover"])
         self.assertTrue(args.register)
         self.assertTrue(args.discover)
+
+    def test_discover_skips_paid_plugin_and_picks_next_free(self) -> None:
+        paid = {
+            "name": "Some Commercial Plugin",
+            "slug": "some-commercial-plugin",
+            "version": "1.0.0",
+            "download_link": "https://downloads.wordpress.org/plugin/some-commercial-plugin.1.0.0.zip",
+            "active_installs": 50000,
+            "business_model": "commercial",
+            "language_packs": [],
+        }
+        looks_free_but_paid = {
+            "name": "Hidden Premium",
+            "slug": "hidden-premium",
+            "version": "3.2.1",
+            "download_link": "https://downloads.wordpress.org/plugin/hidden-premium.3.2.1.zip",
+            "active_installs": 20000,
+            "language_packs": [],
+        }
+        free_plugin = {
+            "name": "Temporary Login Without Password",
+            "slug": "temporary-login-without-password",
+            "version": "1.9.5",
+            "download_link": "https://downloads.wordpress.org/plugin/temporary-login-without-password.1.9.5.zip",
+            "active_installs": 20000,
+            "language_packs": [],
+        }
+        self.assertIn("有料", eligibility_reason(paid, min_installs=1000, skip_slugs=set()))
+        self.assertTrue(is_paid_or_commercial_reason("有料/商用プラグインです (commercial)。"))
+        self.assertEqual(eligibility_reason(looks_free_but_paid, min_installs=1000, skip_slugs=set()), "")
+
+        class FakeWP:
+            def query_plugins(self, **_kwargs):
+                return [paid, looks_free_but_paid, free_plugin], {"page": 1, "pages": 1}
+
+            def glotpress_ja_percent(self, _slug):
+                return 0
+
+            def japanese_language_pack(self, *_args, **_kwargs):
+                return None
+
+            def fetch_plugin(self, slug):
+                if slug == "hidden-premium":
+                    raise SkipPlugin("WordPress情報取得", "有料/商用プラグインのため自動処理しません (business_model=commercial)。")
+                return SimpleNamespace(slug=slug)
+
+        self.assertIn("有料", confirm_free_official(FakeWP(), "hidden-premium"))
+        self.assertEqual(confirm_free_official(FakeWP(), "temporary-login-without-password"), "")
+
+        with tempfile.TemporaryDirectory() as raw:
+            db = Database(Path(raw) / "jobs.sqlite3")
+            settings = load_settings(
+                overrides={
+                    "DISCOVER_BROWSE": "popular",
+                    "DISCOVER_MAX_PAGES": "1",
+                    "DISCOVER_MIN_INSTALLS": "1000",
+                    "DISCOVER_SKIP_SLUGS": "hello-dolly,akismet",
+                }
+            )
+            settings.discover_max_pages = 1
+            found = discover_plugins(
+                FakeWP(),
+                db,
+                settings,
+                logging.getLogger("test"),
+                limit=1,
+                check_glotpress=False,
+                check_translation_api=False,
+            )
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].slug, "temporary-login-without-password")
+            db.close()
 
     def test_legacy_catalog_maps_past_items_and_structured_copy(self) -> None:
         settings = load_settings()
