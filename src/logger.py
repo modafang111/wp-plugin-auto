@@ -51,7 +51,12 @@ def setup_logger(
     formatter = RedactingFormatter(secrets)
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
-    stream_handler = logging.StreamHandler(sys.stdout)
+    stream = sys.stdout
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    stream_handler = logging.StreamHandler(stream)
     stream_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)

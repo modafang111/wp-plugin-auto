@@ -7,8 +7,22 @@ from types import SimpleNamespace
 
 from app import parse_args
 from config import Settings, load_settings
-from src.base_admin import BaseAdminClient, forbidden_control_name, is_login_page, is_protected_item_url, is_two_factor_page
-from src.base_template import BaseTemplateService, normalize_shop_fields
+from src.base_admin import (
+    BaseAdminClient,
+    forbidden_control_name,
+    is_login_page,
+    is_maintenance_page,
+    is_protected_item_url,
+    is_two_factor_page,
+)
+from src.base_template import (
+    BASE_TITLE_MAX,
+    BaseTemplateService,
+    listing_title,
+    normalize_shop_fields,
+    short_plugin_name,
+    strip_listing_text,
+)
 from src.exceptions import PipelineError, SkipPlugin
 from src.database import Database
 from src.legacy_catalog import (
@@ -100,6 +114,22 @@ class CoreTests(unittest.TestCase):
         dst = "本日100％引き"
         self.assertEqual(repair_placeholders(src, dst), "本日100%1$s引き")
 
+    def test_repair_restores_escaped_percent_not_sprintf(self) -> None:
+        src = (
+            "This option is recommended to reduce larger images. You can save up to 80%% "
+            "after resizing. The new width should not be less than your largest thumbnail "
+            "width, which is actually %dpx."
+        )
+        dst = (
+            "より大きな画像を縮小するために推奨されます。リサイズ後に最大80%s節約できます。"
+            "新しい幅は最大のサムネイル幅（実際には%dpx）以上にしてください。"
+        )
+        repaired = repair_placeholders(src, dst)
+        self.assertEqual(sorted(placeholder_tokens(src)), sorted(placeholder_tokens(repaired)))
+        self.assertIn("80%%", repaired)
+        self.assertIn("%d", repaired)
+        self.assertNotIn("%s", repaired)
+
     def test_repair_does_not_touch_unrelated_percent(self) -> None:
         src = "Hello %s"
         dst = "こんにちは %s（50%オフ）"
@@ -143,6 +173,24 @@ class CoreTests(unittest.TestCase):
         report = TranslationBuilder(logging.getLogger("test")).quality_check(items, translations)
         self.assertTrue(report.ok, report.errors)
         self.assertTrue(any(w.startswith("HTMLタグを自動修復") for w in report.warnings))
+
+    def test_listing_title_stays_within_base_limit(self) -> None:
+        long_name = (
+            "Popup Builder & Popup Maker for WordPress – OptinMonster "
+            "メールアドレス Marketing and Lead Generation"
+        )
+        title = listing_title(long_name, "optinmonster")
+        self.assertEqual(title, "OptinMonsterの日本語化ファイル")
+        self.assertLessEqual(len(title), BASE_TITLE_MAX)
+        self.assertEqual(
+            listing_title("Hostinger Reach – AI-Powered Email Marketing for WordPress", "hostinger-reach"),
+            "Hostinger Reachの日本語化ファイル",
+        )
+        self.assertEqual(listing_title("File Manager", "wp-file-manager"), "File Managerの日本語化ファイル")
+        self.assertEqual(short_plugin_name(long_name, "optinmonster"), "OptinMonster")
+        self.assertNotIn("🤩", strip_listing_text("🤩 ポップアップとオプトイン"))
+        self.assertTrue(is_maintenance_page("https://admin.thebase.com/maintenances/maintenance_now"))
+        self.assertFalse(is_maintenance_page("https://admin.thebase.com/shop_admin/items"))
 
     def test_write_catalog_saves_plural_entries(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

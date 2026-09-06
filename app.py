@@ -1048,6 +1048,7 @@ def run_test_mail(settings: Settings) -> int:
             [
                 "base-wp-ja-auto のメール設定テストです。",
                 "このメールが届けば SMTP 設定は有効です。",
+                f"共通設定: {settings.notify_mail_env_path or '(プロジェクト .env のみ)'}",
                 f"SMTP_HOST: {settings.smtp_host}",
                 f"SMTP_PORT: {settings.smtp_port}",
                 f"MAIL_FROM: {settings.mail_from or settings.smtp_user}",

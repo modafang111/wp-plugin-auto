@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from src.notify_settings import apply_shared_notify_env
+
 
 ROOT = Path(__file__).resolve().parent
 
@@ -76,6 +78,7 @@ class Settings:
     notify_email: str
     mail_from: str
     require_email: bool
+    notify_mail_env_path: str
 
     delivery_mark_dispatched: bool
     delivery_poll_seconds: int
@@ -180,6 +183,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         example = ROOT / ".env.example"
         if example.exists():
             load_dotenv(example, override=False)
+    shared_mail_env = apply_shared_notify_env()
 
     overrides = overrides or {}
 
@@ -232,6 +236,7 @@ def load_settings(env_file: Path | None = None, overrides: dict | None = None) -
         notify_email=env("NOTIFY_EMAIL"),
         mail_from=env("MAIL_FROM"),
         require_email=_as_bool(env("REQUIRE_EMAIL"), False),
+        notify_mail_env_path=str(shared_mail_env) if shared_mail_env else "",
         delivery_mark_dispatched=_as_bool(env("DELIVERY_MARK_DISPATCHED"), True),
         delivery_poll_seconds=_as_int(env("DELIVERY_POLL_SECONDS"), 300),
         delivery_lookback_days=_as_int(env("DELIVERY_LOOKBACK_DAYS"), 90),

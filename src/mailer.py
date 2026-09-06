@@ -27,6 +27,8 @@ class Mailer:
         raise_on_error: bool | None = None,
     ) -> None:
         self.logger.info("メール送信: %s", subject)
+        if self.settings.notify_mail_env_path:
+            self.logger.info("通知メール共通設定: %s", self.settings.notify_mail_env_path)
         dest = (to or self.settings.notify_email or "").strip()
         if not dest or not self.settings.smtp_host:
             message = "SMTP または宛先が未設定のためメールは送信しません。"

@@ -39,8 +39,13 @@ WordPress.org 公式ディレクトリの無料プラグインを対象に、
 
      copy .env.example .env
 
-5) .env を編集する。パスワード・APIキーはここだけに書く。
+5) .env を編集する。BASE / OpenAI のパスワード・APIキーはここだけに書く。
    ソースコードへ直接書いてはいけない。.env は Git 管理外。
+   通知メールの SMTP は各ソフトの .env ではなく、次の共通ファイルに1回だけ書く。
+
+     %USERPROFILE%\.config\notify-mail.env
+
+   ひな形は notify-mail.env.example。他の Python ソフトは D:\dev\notify_mail_env.py を読む。
 
    BASE は https://thebase.com/ から進める。最初に入れるのは次だけ。
 
@@ -535,7 +540,16 @@ SQLite data\jobs.sqlite3:
 
 9. メール通知
 -------------
-NOTIFY_EMAIL 宛。
+NOTIFY_EMAIL 宛。送信処理は Mailer.send()。SMTP と宛先はソフト横断の共通ファイル。
+
+  %USERPROFILE%\.config\notify-mail.env
+  なければ D:\dev\.env.notify
+  なければ D:\dev\cloud-agent-sync\notify.local.json
+  または環境変数 NOTIFY_MAIL_ENV
+
+このプロジェクトの .env に SMTP を書かなくてよい。
+他ソフトは D:\dev\notify_mail_env.py の apply_shared_notify_env() を呼ぶ。
+NOTIFY_EMAIL / MAIL_FROM だけプロジェクトで上書きできる。
 
 成功: 【BASE商品登録完了】プラグイン名 バージョン
 売上お届け: 【BASE売上・自動お届け】商品名（購入者へZIP送信後）
@@ -601,6 +615,8 @@ SMTP未設定でも DRY_RUN は止めない（REQUIRE_EMAIL=false）。
 app.py
 config.py
 .env / .env.example
+notify-mail.env.example
+D:\dev\notify_mail_env.py（他ソフト用）
 requirements.txt
 README.txt
 src\

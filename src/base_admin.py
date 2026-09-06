@@ -26,6 +26,7 @@ from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from config import Settings
+from src.base_template import BASE_TITLE_MAX, listing_title, strip_listing_text
 from src.exceptions import NeedsHumanReview, PipelineError
 from src.utils import write_json
 
@@ -66,6 +67,11 @@ def is_two_factor_page(url: str, title: str = "", visible_text: str = "") -> boo
 def is_login_page(url: str) -> bool:
     path = (urlparse(url).path or "").lower()
     return path.rstrip("/") == "/users/login"
+
+
+def is_maintenance_page(url: str, title: str = "", visible_text: str = "") -> bool:
+    blob = f"{url} {title} {visible_text}"
+    return "maintenance" in url.lower() or "メンテナンス" in blob
 
 
 def is_protected_item_url(url: str, item_id: str) -> bool:
@@ -234,9 +240,14 @@ class BaseAdminClient:
             try:
                 self._login_or_resume(page, context, screenshot_dir, pending)
                 self._guard_template(page.url, template_id)
-                self._open_new_digital_form(page, screenshot_dir, template_id)
-                self._fill_form(page, listing, zip_path, screenshot_dir)
-                created = self._submit_new_item(page, listing, screenshot_dir, template_id)
+                created = self._create_item_once(page, listing, zip_path, screenshot_dir, template_id)
+                if created is None and self._recover_session(page, context, screenshot_dir):
+                    created = self._create_item_once(page, listing, zip_path, screenshot_dir, template_id)
+                if created is None:
+                    raise NeedsHumanReview(
+                        "BASE商品登録",
+                        "登録ボタンを押したあと新規登録画面のままです。必須項目不足の可能性があります。削除はしていません。",
+                    )
                 context.storage_state(path=str(state_path))
                 _clear_pending(self.settings)
                 self.logger.info(
@@ -379,6 +390,52 @@ class BaseAdminClient:
         self._snapshot(page, screenshot_dir / f"base-copy-updated-{item_id}.png")
         self.logger.info("商品説明を更新しました: item_id=%s", item_id)
 
+    def _create_item_once(
+        self,
+        page: Any,
+        listing: dict[str, Any],
+        zip_path: Path,
+        screenshot_dir: Path,
+        template_id: str,
+    ) -> dict[str, Any] | None:
+        self._open_new_digital_form(page, screenshot_dir, template_id)
+        if self._session_expired(page):
+            return None
+        self._fill_form(page, listing, zip_path, screenshot_dir)
+        if self._session_expired(page):
+            return None
+        try:
+            return self._submit_new_item(page, listing, screenshot_dir, template_id)
+        except NeedsHumanReview:
+            if self._session_expired(page) or "/items/add" in (page.url or ""):
+                return None
+            raise
+
+    def _session_expired(self, page: Any) -> bool:
+        try:
+            if page.get_by_text("再度ログインしてください").count():
+                return True
+            if page.get_by_role("button", name="再度ログインする").count():
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _recover_session(self, page: Any, context: Any, screenshot_dir: Path) -> bool:
+        self.logger.warning("BASEセッションが切れたため再ログインします")
+        btn = page.get_by_role("button", name="再度ログインする")
+        if btn.count():
+            try:
+                btn.first.click(timeout=3000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1000)
+        try:
+            self._login_or_resume(page, context, screenshot_dir, {})
+        except NeedsHumanReview:
+            return False
+        return self._already_logged_in(page)
+
     def _login_or_resume(self, page: Any, context: Any, screenshot_dir: Path, pending: dict[str, Any]) -> None:
         state_path = self.settings.playwright_state_path
         if state_path.exists():
@@ -387,6 +444,7 @@ class BaseAdminClient:
                 page.wait_for_load_state("networkidle", timeout=20000)
             except Exception:
                 page.wait_for_timeout(2000)
+            self._wait_out_maintenance(page, screenshot_dir)
             if self._already_logged_in(page):
                 self.logger.info("BASE管理画面: 保存済みセッションでログイン済み")
                 return
@@ -485,7 +543,32 @@ class BaseAdminClient:
         if wall and wall != "two_factor":
             self._fail_auth(page, screenshot_dir, wall)
 
+    def _wait_out_maintenance(self, page: Any, screenshot_dir: Path, *, attempts: int = 4, wait_seconds: int = 45) -> None:
+        for index in range(1, attempts + 1):
+            title = ""
+            try:
+                title = page.title()
+            except Exception:
+                title = ""
+            if not is_maintenance_page(page.url, title):
+                return
+            self.logger.warning(
+                "BASEメンテナンス中です。%s秒後に再試行します (%s/%s)",
+                wait_seconds,
+                index,
+                attempts,
+            )
+            page.wait_for_timeout(wait_seconds * 1000)
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=45000)
+            except Exception:
+                page.goto(ITEMS_LIST_URL, wait_until="domcontentloaded", timeout=45000)
+        self._snapshot(page, screenshot_dir / "base-maintenance.png")
+        raise NeedsHumanReview("BASEログイン", f"BASEがメンテナンス中です: {page.url}")
+
     def _already_logged_in(self, page: Any) -> bool:
+        if is_maintenance_page(page.url):
+            return False
         if is_login_page(page.url) or is_two_factor_page(page.url, page.title()):
             return False
         if "admin.thebase.com" not in (urlparse(page.url).netloc or ""):
@@ -504,6 +587,7 @@ class BaseAdminClient:
             self._snapshot(page, screenshot_dir / "base-two-factor.png")
             raise NeedsHumanReview("BASEログイン", "認証番号の入力がまだ完了していません。")
         page.goto(ITEMS_LIST_URL, wait_until="domcontentloaded", timeout=45000)
+        self._wait_out_maintenance(page, screenshot_dir)
         self._dismiss_noise(page)
         if is_login_page(page.url) or is_two_factor_page(page.url, page.title()):
             self._snapshot(page, screenshot_dir / "base-login-required.png")
@@ -568,6 +652,8 @@ class BaseAdminClient:
         dump_page(page, screenshot_dir / "base-new-item.txt")
 
     def _fill_form(self, page: Any, listing: dict[str, Any], zip_path: Path, screenshot_dir: Path) -> None:
+        listing["title"] = (listing.get("title") or "")[:BASE_TITLE_MAX]
+        listing["detail"] = strip_listing_text(listing.get("detail") or "")
         name = page.locator("#itemDetail_name")
         if name.count():
             name.first.fill(listing["title"])
@@ -641,7 +727,31 @@ class BaseAdminClient:
         if chosen is None:
             return False
         chosen.set_input_files(str(path))
-        page.wait_for_timeout(800)
+        submit = page.get_by_role("button", name="商品を登録", exact=True)
+        ready = False
+        for _ in range(40):
+            spinning = 0
+            try:
+                spinning = page.locator("[class*='loading'], [class*='spinner'], [class*='Loader']").count()
+            except Exception:
+                spinning = 0
+            enabled = False
+            try:
+                enabled = bool(submit.count() and submit.first.is_enabled())
+            except Exception:
+                enabled = False
+            if enabled and spinning == 0:
+                ready = True
+                break
+            page.wait_for_timeout(500)
+        if not ready:
+            self.logger.warning("商品画像のアップロード完了を確認できません。画像なしで登録を続けます")
+            try:
+                chosen.set_input_files([])
+            except Exception:
+                pass
+            page.wait_for_timeout(800)
+            return False
         self.logger.info("商品画像を添付しました: %s", path.name)
         return True
 
@@ -676,9 +786,26 @@ class BaseAdminClient:
         )
         if submit is None:
             raise NeedsHumanReview("BASE商品登録", "「商品を登録」ボタンが見つかりません。更新/削除は押しません。")
+        if not self._wait_enabled(submit, timeout_ms=8000):
+            self._repair_disabled_submit(page, listing)
+            submit = _first_existing(
+                page,
+                [
+                    lambda: page.get_by_role("button", name="商品を登録", exact=True),
+                    lambda: page.get_by_role("button", name=re.compile(r"^商品を登録$")),
+                    lambda: page.get_by_role("button", name="登録する", exact=True),
+                ],
+            )
+            if submit is None or not self._wait_enabled(submit, timeout_ms=15000):
+                self._snapshot(page, screenshot_dir / "base-submit-disabled.png")
+                dump_page(page, screenshot_dir / "base-submit-disabled.txt")
+                raise NeedsHumanReview(
+                    "BASE商品登録",
+                    "「商品を登録」ボタンが無効のままです。商品名の長さまたは必須項目を確認してください。",
+                )
         self._safe_click(page, submit, "商品を登録")
         try:
-            page.wait_for_url(re.compile(r"/shop_admin/items/(?:edit/\d+)?(?:\?.*)?$"), timeout=45000)
+            page.wait_for_url(re.compile(r"/shop_admin/items/(?:edit/\d+)?(?:\?.*)?$"), timeout=20000)
         except Exception:
             page.wait_for_timeout(3000)
         self._guard_template(page.url, template_id)
@@ -761,6 +888,36 @@ class BaseAdminClient:
                 "BASE商品登録",
                 f"テンプレート商品 {template_id} の編集画面へ進もうとしたため停止しました。テンプレートは参照専用です。",
             )
+
+    def _wait_enabled(self, locator: Any, *, timeout_ms: int = 10000) -> bool:
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            try:
+                if locator.is_enabled():
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.4)
+        return False
+
+    def _repair_disabled_submit(self, page: Any, listing: dict[str, Any]) -> None:
+        slug = str(listing.get("plugin_slug") or listing.get("identifier") or "")
+        shorter = listing_title(str(listing.get("plugin_name") or listing.get("title") or ""), slug, max_len=50)
+        if shorter and shorter != listing.get("title"):
+            listing["title"] = shorter
+            self.logger.warning("商品名を短くして再入力します: %s", shorter)
+            name = page.locator("#itemDetail_name")
+            if name.count():
+                name.first.fill(shorter)
+            else:
+                _fill_by_labels(page, ["商品名"], shorter)
+        detail = strip_listing_text(listing.get("detail") or "")
+        if detail != listing.get("detail"):
+            listing["detail"] = detail
+            box = page.locator("#itemDetail_detail")
+            if box.count():
+                box.first.fill(detail)
+        page.wait_for_timeout(800)
 
     def _safe_click(self, page: Any, locator: Any, expected_name: str) -> None:
         if forbidden_control_name(expected_name):

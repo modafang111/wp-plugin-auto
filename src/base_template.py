@@ -14,6 +14,58 @@ from src.utils import SafeHttp, read_json, write_json
 from src.wordpress import PluginInfo
 
 
+# BASE の商品名は長すぎると「商品を登録」が disabled のままになる。
+BASE_TITLE_MAX = 100
+EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002700-\U000027BF"
+    "\U00002600-\U000026FF"
+    "]+"
+)
+
+
+def strip_listing_text(text: str) -> str:
+    cleaned = EMOJI_RE.sub("", text or "")
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def short_plugin_name(name: str, slug: str = "", *, max_len: int = 80) -> str:
+    text = htmlmod.unescape(name or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    slug = (slug or "").strip().lower()
+    if slug:
+        parts = [re.escape(part) for part in slug.split("-") if part]
+        if parts:
+            found = re.search(r"[\s_\-]*".join(parts), text, re.I)
+            if found:
+                candidate = re.sub(r"[\s_\-]+", " ", found.group(0)).strip()
+                if 2 <= len(candidate) <= max_len:
+                    return candidate
+    for sep in (" – ", " — ", " - "):
+        if sep in text:
+            head = text.split(sep, 1)[0].strip()
+            head = re.sub(r"\s+for WordPress.*$", "", head, flags=re.I).strip()
+            if 2 <= len(head) <= max_len:
+                return head
+            text = head
+            break
+    if len(text) > max_len:
+        text = text[:max_len].rstrip(" –—-")
+    return text or (slug.replace("-", " ") if slug else "WordPress plugin")
+
+
+def listing_title(plugin_name: str, slug: str = "", *, suffix: str = "の日本語化ファイル", max_len: int = BASE_TITLE_MAX) -> str:
+    suffix = suffix or ""
+    room = max(8, max_len - len(suffix))
+    name = short_plugin_name(plugin_name, slug, max_len=room)
+    title = f"{name}{suffix}"
+    if len(title) > max_len:
+        title = title[:max_len].rstrip()
+    return title
+
+
 DEFAULT_DESCRIPTION = """■商品について
 本商品は「{plugin_name}」の日本語化ファイルです。
 WordPress公式プラグイン本体は含まれていません。
@@ -232,8 +284,8 @@ class BaseTemplateService:
         package: dict,
         quality: dict,
     ) -> dict:
-        title = self.render_name(info.name, template)
-        detail = self.render_description(info, template, package)
+        title = self.render_name(info.name, template, slug=info.slug)
+        detail = strip_listing_text(self.render_description(info, template, package))
         identifier = re.sub(r"\s+", "", f"{info.slug}-{info.version}")[:50]
         listing = {
             "title": title,
@@ -252,6 +304,7 @@ class BaseTemplateService:
             "template_source": template.source,
             "sale_package_mode": self.settings.sale_package_mode,
             "plugin_name": info.name,
+            "plugin_slug": info.slug,
             "plugin_version": info.version,
             "wordpress_url": info.official_url,
             "translation_count": quality.get("translated_count"),
@@ -259,16 +312,17 @@ class BaseTemplateService:
         }
         return listing
 
-    def render_name(self, plugin_name: str, template: ProductTemplate) -> str:
+    def render_name(self, plugin_name: str, template: ProductTemplate, slug: str = "") -> str:
         pattern = template.name_pattern or self.settings.product_name_pattern
-        return pattern.replace("{plugin_name}", plugin_name).replace("{version}", "")
+        suffix = pattern.replace("{plugin_name}", "").replace("{version}", "")
+        return listing_title(plugin_name, slug, suffix=suffix, max_len=BASE_TITLE_MAX)
 
     def render_description(self, info: PluginInfo, template: ProductTemplate, package: dict) -> str:
         values = {
             "plugin_name": info.name,
             "version": info.version,
             "official_url": info.official_url,
-            "short_description": info.short_description or info.description[:180],
+            "short_description": strip_listing_text(info.short_description or info.description[:180]),
             "slug": info.slug,
             "created": package.get("created") or "",
             "po_name": package.get("po_name") or f"{info.slug}-ja.po",

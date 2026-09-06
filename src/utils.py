@@ -65,8 +65,10 @@ PLACEHOLDER_RE = re.compile(
 _NUM_PERCENT_PLACEHOLDER_RE = re.compile(
     r"(?P<num>[0-9０-９]+)(?P<ph>%(?:[0-9]+\$)?s)"
 )
+_NUM_ESCAPED_PERCENT_RE = re.compile(r"(?P<num>[0-9０-９]+)%%")
 # 訳文側で同じ数字の直後に残った「ただの %」。sprintf トークンではないもの。
 _BROKEN_PERCENT_AFTER_NUM_RE = r"(?:％|%%|パーセント|%(?![sdifFouxXeEgGc%]|[0-9]+\$))"
+_ESCAPED_PERCENT_BROKEN_RE = r"(?:%s|％|パーセント|%(?![sdifFouxXeEgGc]|[0-9]+\$))"
 HTML_TAG_RE = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>")
 HTML_URL_ATTR_RE = re.compile(r"""(?:href|src)\s*=\s*(['"])(.*?)\1""", re.I)
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -290,6 +292,18 @@ def repair_placeholders(source: str, dest: str) -> str:
         return dest
     repaired = dest
     if sorted(placeholder_tokens(source)) != sorted(placeholder_tokens(repaired)):
+        for match in _NUM_ESCAPED_PERCENT_RE.finditer(source or ""):
+            num = match.group("num")
+            if re.search(rf"{re.escape(num)}%%", repaired):
+                continue
+            if re.search(rf"{re.escape(num)}%s", source or ""):
+                continue
+            repaired, _n = re.subn(
+                rf"{re.escape(num)}\s*{_ESCAPED_PERCENT_BROKEN_RE}",
+                f"{num}%%",
+                repaired,
+                count=1,
+            )
         for match in _NUM_PERCENT_PLACEHOLDER_RE.finditer(source or ""):
             num = match.group("num")
             ph = match.group("ph")
@@ -301,6 +315,7 @@ def repair_placeholders(source: str, dest: str) -> str:
                 repaired,
                 count=1,
             )
+        repaired = _drop_extra_placeholders(source, repaired)
     src_ph = placeholder_tokens(source)
     dst_ph = placeholder_tokens(repaired)
     if sorted(src_ph) == sorted(dst_ph):
@@ -321,6 +336,21 @@ def repair_placeholders(source: str, dest: str) -> str:
     if last:
         return repaired[: last.end()] + insertion + repaired[last.end() :]
     return repaired.rstrip() + insertion
+
+
+def _drop_extra_placeholders(source: str, dest: str) -> str:
+    needed = Counter(placeholder_tokens(source))
+    pieces: list[str] = []
+    last = 0
+    for match in PLACEHOLDER_RE.finditer(dest or ""):
+        pieces.append(dest[last:match.start()])
+        token = match.group(0)
+        if needed.get(token, 0) > 0:
+            needed[token] -= 1
+            pieces.append(token)
+        last = match.end()
+    pieces.append((dest or "")[last:])
+    return "".join(pieces)
 
 
 def _html_name_key(match: re.Match[str]) -> str:
