@@ -146,6 +146,10 @@ class Settings:
         return self.data_dir / "playwright" / "base_state.json"
 
     @property
+    def playwright_user_data_dir(self) -> Path:
+        return self.data_dir / "playwright" / "chrome-profile"
+
+    @property
     def visible_flag(self) -> int:
         return 0 if self.base_publish_mode != "public" else 1
 
@@ -159,6 +163,7 @@ class Settings:
             self.screenshots_dir,
             self.backup_dir,
             self.data_dir / "playwright",
+            self.data_dir / "playwright" / "chrome-profile",
             self.data_dir / "templates",
         ):
             path.mkdir(parents=True, exist_ok=True)

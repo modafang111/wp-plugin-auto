@@ -82,6 +82,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--base-only", action="store_true", help="既存の翻訳成果から BASE 登録だけ行う")
     parser.add_argument("--force", action="store_true", help="同一versionの登録済み・十分日本語化済みでも続行")
     parser.add_argument("--base-auth", action="store_true", help="BASE OAuth 認可コードをトークンへ交換する")
+    parser.add_argument(
+        "--base-login",
+        action="store_true",
+        help="BASE管理画面へ画面付きでログインし、同じChromeプロファイルにセッションを残す",
+    )
+    parser.add_argument(
+        "--base-keepalive",
+        action="store_true",
+        help="保存セッションだけで管理画面に入れるか確認し、クッキーを更新する（認証番号は使わない）",
+    )
     parser.add_argument("--fetch-template", action="store_true", help="テンプレート商品を取得してキャッシュする")
     parser.add_argument("--test-mail", action="store_true", help="NOTIFY_EMAIL へテストメールを送る")
     parser.add_argument(
@@ -158,6 +168,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.base_auth:
         return run_base_auth(settings)
+    if args.base_login:
+        return run_base_login(settings, otp=args.otp)
+    if args.base_keepalive:
+        return run_base_keepalive(settings)
     if args.test_mail:
         return run_test_mail(settings)
     if args.test_base:
@@ -1029,12 +1043,51 @@ def run_deliver_orders(settings: Settings, *, dry_run: bool, watch: bool, otp: s
         return 1 if counts["failed"] else 0
     except NeedsHumanReview as exc:
         logger.error("要確認 (%s): %s", exc.stage, exc.message)
+        _notify_session_problem(settings, mailer, logger, exc.message)
         return 1
     except PipelineError as exc:
         logger.error("エラー (%s): %s", exc.stage, exc.message)
         return 1
     finally:
         db.close()
+
+
+def _notify_session_problem(settings: Settings, mailer: Mailer, logger, message: str) -> None:
+    from src.base_admin import mark_session_alerted, should_alert_session
+
+    if not should_alert_session(settings):
+        logger.info("セッション切れ通知は抑制中です")
+        return
+    mailer.needs_review(
+        {
+            "plugin_name": "BASEセッション",
+            "reason": message,
+            "retry": "base-login.bat",
+        }
+    )
+    mark_session_alerted(settings)
+
+
+def run_base_keepalive(settings: Settings) -> int:
+    from src.base_admin import BaseAdminClient
+
+    settings.playwright_headless = True
+    logger, log_path = setup_logger(settings.logs_dir, slug="base-keepalive", secrets=settings.secret_values())
+    mailer = Mailer(settings, logger)
+    admin = BaseAdminClient(settings, logger)
+    screenshot_dir = settings.screenshots_dir / "base-keepalive"
+    try:
+        with admin.logged_in_page(screenshot_dir):
+            logger.info("BASEセッションを更新しました")
+    except NeedsHumanReview as exc:
+        logger.error("要確認 (%s): %s", exc.stage, exc.message)
+        logger.error("ログ: %s", log_path)
+        _notify_session_problem(settings, mailer, logger, exc.message)
+        return 1
+    except PipelineError as exc:
+        logger.error("エラー (%s): %s", exc.stage, exc.message)
+        return 1
+    return 0
 
 
 def run_test_mail(settings: Settings) -> int:
@@ -1059,6 +1112,30 @@ def run_test_mail(settings: Settings) -> int:
         ),
     )
     logger.info("テストメールを送信しました")
+    return 0
+
+
+def run_base_login(settings: Settings, otp: str = "") -> int:
+    from src.base_admin import BaseAdminClient
+
+    settings.playwright_headless = False
+    secrets = list(settings.secret_values())
+    if otp:
+        secrets.append(otp)
+    logger, log_path = setup_logger(settings.logs_dir, slug="base-login", secrets=secrets)
+    logger.info("BASE管理画面へ画面付きでログインします。認証番号が来たらブラウザに入力してください。")
+    admin = BaseAdminClient(settings, logger, otp=otp)
+    screenshot_dir = settings.screenshots_dir / "base-login"
+    try:
+        with admin.logged_in_page(screenshot_dir):
+            logger.info("BASE管理画面にログインできました。セッションを保存しました。")
+    except NeedsHumanReview as exc:
+        logger.error("要確認 (%s): %s", exc.stage, exc.message)
+        logger.error("ログ: %s", log_path)
+        return 1
+    except PipelineError as exc:
+        logger.error("エラー (%s): %s", exc.stage, exc.message)
+        return 1
     return 0
 
 

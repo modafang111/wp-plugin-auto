@@ -14,6 +14,9 @@ from src.base_admin import (
     is_maintenance_page,
     is_protected_item_url,
     is_two_factor_page,
+    mark_session_alerted,
+    otp_resume_hint,
+    should_alert_session,
 )
 from src.base_template import (
     BASE_TITLE_MAX,
@@ -249,6 +252,17 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(is_two_factor_page("https://admin.thebase.com/users/login", "ログイン | BASE"))
         self.assertTrue(is_login_page("https://admin.thebase.com/users/login"))
         self.assertFalse(is_login_page("https://admin.thebase.com/users/verify_two_factor_auth_via_mail"))
+        self.assertIn("--resume --otp", otp_resume_hint())
+        self.assertNotIn("deliver-orders-dry-run", otp_resume_hint())
+
+    def test_session_alert_is_throttled(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            settings = SimpleNamespace(data_dir=Path(raw))
+            (settings.data_dir / "playwright").mkdir()
+            self.assertTrue(should_alert_session(settings, now=1000))
+            mark_session_alerted(settings, now=1000)
+            self.assertFalse(should_alert_session(settings, now=1000 + 60))
+            self.assertTrue(should_alert_session(settings, now=1000 + 12 * 3600))
 
     def test_template_item_is_protected(self) -> None:
         self.assertTrue(is_protected_item_url("https://admin.thebase.com/shop_admin/items/55749997", "55749997"))
@@ -625,6 +639,7 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(args.rewrite_pages)
         self.assertTrue(args.build_zips)
         self.assertTrue(parse_args(["--test-deliver"]).test_deliver)
+        self.assertTrue(parse_args(["--base-keepalive"]).base_keepalive)
 
     def test_legacy_catalog_zip_is_used_for_past_orders(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -85,6 +85,9 @@ Windows では次のバッチをダブルクリックしてもよい。
 
   setup.bat                     仮想環境・依存関係・Chromium
   test-mail.bat                 自分宛てにメール設定テスト
+  base-login.bat                BASE管理画面へ画面付きログイン（セッション再作成）
+  base-keepalive.bat            保存セッションの更新（認証番号は使わない）
+  schedule-keepalive.bat        毎日 01:30 にセッション更新タスクを作る
   test-deliver.bat              自分宛てにZIP付きお届けテスト
   deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
@@ -185,12 +188,22 @@ BASE登録のみ（翻訳成果物がある前提）:
 
      python app.py --test-base
 
+自動ログインの恒久運用:
+
+  認証番号の回避はしない。代わりに保存セッションを使い続け、切れる前に更新する。
+  - 朝の登録は先に --base-keepalive で生存確認する
+  - 毎日 01:30 に base-keepalive.bat（schedule-keepalive.bat で作成）
+  - お届け処理（5分おき）でもクッキーを更新する
+  - 切れたときは base-login.bat。ヘッドレスでパスワード再ログインはしない
+
 新しい環境からのログインでメール認証番号を求められた場合:
 
-     python app.py --test-base --otp 123456
+     base-login.bat
+     または
+     python app.py --resume --otp 123456 "https://wordpress.org/plugins/<slug>/"
 
-番号はログに書きません。一度ログインできたブラウザ状態は
-data\playwright\base_state.json に保存され、次回は番号なしで進めます。
+番号はログに書きません。画面ログイン後のクッキーは
+data\playwright\base_state.json に保存する。2FA画面の途中状態では上書きしない。
 テンプレート商品の編集・削除はしません。
 
 
@@ -257,10 +270,10 @@ APIに存在しない / 使わない:
 
 Playwright:
   - ログイン先は BASE_ADMIN_URL（初期値 https://admin.thebase.com/users/login）
-  - ログインセッション保存は data\playwright\base_state.json
+  - ログインセッションは data\playwright\chrome-profile の同一ブラウザ
   - CAPTCHA / 二段階認証 / パスキー確認 / 本人確認が出たら停止し
     「BASEで手動認証が必要です」とメールする。回避コードは持たない。
-  - メール認証番号はユーザーが --otp で渡したときだけ入力する。
+  - メール認証番号はユーザーが --otp で渡すか、base-login.bat の画面に入力する。
   - 実画面（2026-08時点）の新規登録は「+ 商品を登録」→ 通常商品
     （/shop_admin/items/add）。公開状態は BASE_PUBLISH_MODE に従う。
   - 「デジタルコンテンツ」がメニューに出ないショップでは ZIP は未添付のまま
@@ -415,16 +428,12 @@ PCでの準備:
 
   4) このPCで BASE に1回ログインする（必須）
        クラウドで保存した data\playwright\base_state.json は使えない。
-       初回だけ PLAYWRIGHT_HEADLESS=false にして画面を出す。
 
-       deliver-orders-dry-run.bat
+       base-login.bat
 
-       メール認証番号を求められたら:
-
-       deliver-orders-dry-run.bat --otp 123456
-
+       認証番号が来たら開いたブラウザに入力する。
        成功後は data\playwright\base_state.json がこのPCにできる。
-       PLAYWRIGHT_HEADLESS=true に戻す。
+       以降の自動実行は保存セッションだけを使い、切れたら base-login.bat を案内する。
 
   5) お届けメールのテスト（自分宛て。購入者には送らない）
 

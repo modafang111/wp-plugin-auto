@@ -33,6 +33,11 @@ from src.utils import write_json
 
 ADMIN_ORIGIN = "https://admin.thebase.com"
 ITEMS_LIST_URL = f"{ADMIN_ORIGIN}/shop_admin/items"
+PLAYWRIGHT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+SESSION_ALERT_COOLDOWN_SECONDS = 12 * 3600
 ITEMS_ADD_URL = f"{ADMIN_ORIGIN}/shop_admin/items/add"
 ORDERS_LIST_URL = f"{ADMIN_ORIGIN}/shop_admin/orders/"
 PENDING_ORDER_STATUSES = {"ordered"}
@@ -89,6 +94,45 @@ def forbidden_control_name(name: str) -> bool:
     return "削除" in text
 
 
+def otp_resume_hint() -> str:
+    return (
+        "届いた6桁を次で渡してください: "
+        'python app.py --resume --otp 123456 "<URL>"'
+        " （番号はログに書きません）"
+    )
+
+
+def session_health_path(settings: Settings) -> Path:
+    return settings.data_dir / "playwright" / "session_ok.json"
+
+
+def session_alert_path(settings: Settings) -> Path:
+    return settings.data_dir / "playwright" / "session_alerted_at.txt"
+
+
+def mark_session_ok(settings: Settings) -> None:
+    write_json(session_health_path(settings), {"ok": True, "checked_at": int(time.time())})
+    alert = session_alert_path(settings)
+    if alert.exists():
+        alert.unlink()
+
+
+def should_alert_session(settings: Settings, *, now: float | None = None) -> bool:
+    stamp = time.time() if now is None else now
+    path = session_alert_path(settings)
+    if not path.exists():
+        return True
+    try:
+        last = float(path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return True
+    return (stamp - last) >= SESSION_ALERT_COOLDOWN_SECONDS
+
+
+def mark_session_alerted(settings: Settings, *, now: float | None = None) -> None:
+    session_alert_path(settings).write_text(str(int(now if now is not None else time.time())), encoding="utf-8")
+
+
 def pending_path(settings: Settings) -> Path:
     return settings.data_dir / "playwright" / "pending.json"
 
@@ -100,52 +144,82 @@ class BaseAdminClient:
         self.otp = (otp or "").strip()
 
     @contextmanager
-    def logged_in_page(self, screenshot_dir: Path) -> Iterator[Any]:
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
+    def _open_context(self, stage: str = "BASEログイン") -> Iterator[tuple[Any, Any]]:
         try:
-            from playwright.sync_api import TimeoutError as PlaywrightTimeout
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
             raise NeedsHumanReview(
-                "BASE注文取得",
+                stage,
                 "Playwright が未インストールです。pip install playwright && python -m playwright install chromium",
             ) from exc
-
+        profile = self.settings.playwright_user_data_dir
+        profile.mkdir(parents=True, exist_ok=True)
         state_path = self.settings.playwright_state_path
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        pending = _read_pending(self.settings)
+        shared = {
+            "locale": "ja-JP",
+            "timezone_id": "Asia/Tokyo",
+            "viewport": {"width": 1600, "height": 1100},
+            "user_agent": PLAYWRIGHT_USER_AGENT,
+            "args": ["--disable-dev-shm-usage"],
+        }
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=self.settings.playwright_headless,
-                args=["--disable-dev-shm-usage"],
-            )
-            context_kwargs: dict[str, Any] = {
-                "locale": "ja-JP",
-                "timezone_id": "Asia/Tokyo",
-                "viewport": {"width": 1600, "height": 1100},
-            }
-            if state_path.exists():
-                context_kwargs["storage_state"] = str(state_path)
-            context = browser.new_context(**context_kwargs)
-            page = context.new_page()
+            browser = None
+            if self.settings.playwright_headless:
+                browser = p.chromium.launch(headless=True, args=shared["args"])
+                context_kwargs = {
+                    "locale": shared["locale"],
+                    "timezone_id": shared["timezone_id"],
+                    "viewport": shared["viewport"],
+                    "user_agent": shared["user_agent"],
+                }
+                if state_path.exists():
+                    context_kwargs["storage_state"] = str(state_path)
+                context = browser.new_context(**context_kwargs)
+                page = context.new_page()
+            else:
+                context = p.chromium.launch_persistent_context(
+                    str(profile),
+                    headless=False,
+                    locale=shared["locale"],
+                    timezone_id=shared["timezone_id"],
+                    viewport=shared["viewport"],
+                    user_agent=shared["user_agent"],
+                    args=shared["args"],
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+            try:
+                yield page, context
+            finally:
+                context.close()
+                if browser is not None:
+                    browser.close()
+
+    def _persist_if_logged_in(self, page: Any, context: Any) -> None:
+        try:
+            if self._already_logged_in(page):
+                context.storage_state(path=str(self.settings.playwright_state_path))
+                mark_session_ok(self.settings)
+        except Exception:
+            return
+
+    @contextmanager
+    def logged_in_page(self, screenshot_dir: Path) -> Iterator[Any]:
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+        pending = _read_pending(self.settings)
+        with self._open_context("BASE注文取得") as (page, context):
             try:
                 self._login_or_resume(page, context, screenshot_dir, pending)
                 yield page
-                context.storage_state(path=str(state_path))
+                self._persist_if_logged_in(page, context)
                 _clear_pending(self.settings)
             except NeedsHumanReview:
                 self._snapshot(page, screenshot_dir / "base-needs-review.png")
-                try:
-                    context.storage_state(path=str(state_path))
-                except Exception:
-                    pass
                 raise
             except PlaywrightTimeout as exc:
                 self._snapshot(page, screenshot_dir / "base-timeout.png")
                 raise NeedsHumanReview("BASE注文取得", f"管理画面の操作が時間切れです。 {exc}") from exc
-            finally:
-                context.close()
-                browser.close()
 
     def list_order_summaries(self, page: Any, *, statuses: list[str] | None = None, limit: int = 50) -> list[dict[str, Any]]:
         today = date.today()
@@ -213,30 +287,10 @@ class BaseAdminClient:
         if template_id and listing.get("title") and template_id in str(listing.get("title")):
             raise PipelineError("BASE商品登録", "テンプレート商品IDが商品名に含まれています。登録を中止します。")
         screenshot_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            from playwright.sync_api import TimeoutError as PlaywrightTimeout
-            from playwright.sync_api import sync_playwright
-        except ImportError as exc:
-            raise NeedsHumanReview("BASE商品登録", "Playwright が未インストールです。pip install playwright && python -m playwright install chromium") from exc
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-        state_path = self.settings.playwright_state_path
-        state_path.parent.mkdir(parents=True, exist_ok=True)
         pending = _read_pending(self.settings)
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=self.settings.playwright_headless,
-                args=["--disable-dev-shm-usage"],
-            )
-            context_kwargs: dict[str, Any] = {
-                "locale": "ja-JP",
-                "timezone_id": "Asia/Tokyo",
-                "viewport": {"width": 1600, "height": 1100},
-            }
-            if state_path.exists():
-                context_kwargs["storage_state"] = str(state_path)
-            context = browser.new_context(**context_kwargs)
-            page = context.new_page()
+        with self._open_context("BASE商品登録") as (page, context):
             try:
                 self._login_or_resume(page, context, screenshot_dir, pending)
                 self._guard_template(page.url, template_id)
@@ -248,7 +302,7 @@ class BaseAdminClient:
                         "BASE商品登録",
                         "登録ボタンを押したあと新規登録画面のままです。必須項目不足の可能性があります。削除はしていません。",
                     )
-                context.storage_state(path=str(state_path))
+                self._persist_if_logged_in(page, context)
                 _clear_pending(self.settings)
                 self.logger.info(
                     "BASE管理画面で商品を登録: item_id=%s visible=%s url=%s",
@@ -259,17 +313,10 @@ class BaseAdminClient:
                 return created
             except NeedsHumanReview:
                 self._snapshot(page, screenshot_dir / "base-needs-review.png")
-                try:
-                    context.storage_state(path=str(state_path))
-                except Exception:
-                    pass
                 raise
             except PlaywrightTimeout as exc:
                 self._snapshot(page, screenshot_dir / "base-timeout.png")
                 raise NeedsHumanReview("BASE商品登録", f"管理画面の操作が時間切れです。画面構成が変わった可能性があります。 {exc}") from exc
-            finally:
-                context.close()
-                browser.close()
 
     def replace_item_image(self, item_id: str, image_path: Path, screenshot_dir: Path) -> None:
         template_id = str(self.settings.base_template_product_id or "")
@@ -281,20 +328,8 @@ class BaseAdminClient:
             raise PipelineError("BASE商品登録", f"画像がありません: {image_path}")
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         from playwright.sync_api import TimeoutError as PlaywrightTimeout
-        from playwright.sync_api import sync_playwright
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=self.settings.playwright_headless,
-                args=["--disable-dev-shm-usage"],
-            )
-            context = browser.new_context(
-                locale="ja-JP",
-                timezone_id="Asia/Tokyo",
-                viewport={"width": 1600, "height": 1100},
-                **({"storage_state": str(self.settings.playwright_state_path)} if self.settings.playwright_state_path.exists() else {}),
-            )
-            page = context.new_page()
+        with self._open_context("BASE商品登録") as (page, context):
             try:
                 self._login_or_resume(page, context, screenshot_dir, _read_pending(self.settings))
                 edit_url = f"{ADMIN_ORIGIN}/shop_admin/items/edit/{item_id}"
@@ -324,13 +359,10 @@ class BaseAdminClient:
                 self._guard_template(page.url, template_id)
                 self._snapshot(page, screenshot_dir / "base-image-updated.png")
                 self.logger.info("商品画像を更新しました: item_id=%s", item_id)
-                context.storage_state(path=str(self.settings.playwright_state_path))
+                self._persist_if_logged_in(page, context)
             except PlaywrightTimeout as exc:
                 self._snapshot(page, screenshot_dir / "base-image-timeout.png")
                 raise NeedsHumanReview("BASE商品登録", f"画像更新が時間切れです。 {exc}") from exc
-            finally:
-                context.close()
-                browser.close()
 
     def update_item_copy(self, item_id: str, listing: dict[str, Any], screenshot_dir: Path) -> None:
         """Update title/detail of an existing item. Never edits the template. Never deletes."""
@@ -437,17 +469,15 @@ class BaseAdminClient:
         return self._already_logged_in(page)
 
     def _login_or_resume(self, page: Any, context: Any, screenshot_dir: Path, pending: dict[str, Any]) -> None:
-        state_path = self.settings.playwright_state_path
-        if state_path.exists():
-            page.goto(ITEMS_LIST_URL, wait_until="domcontentloaded", timeout=45000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=20000)
-            except Exception:
-                page.wait_for_timeout(2000)
-            self._wait_out_maintenance(page, screenshot_dir)
-            if self._already_logged_in(page):
-                self.logger.info("BASE管理画面: 保存済みセッションでログイン済み")
-                return
+        page.goto(ITEMS_LIST_URL, wait_until="domcontentloaded", timeout=45000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            page.wait_for_timeout(2000)
+        self._wait_out_maintenance(page, screenshot_dir)
+        if self._already_logged_in(page):
+            self.logger.info("BASE管理画面: 保存済みセッションでログイン済み")
+            return
 
         if self.otp:
             resume_url = pending.get("url") if pending.get("purpose") == "two_factor" else ""
@@ -460,7 +490,7 @@ class BaseAdminClient:
                 self.logger.info("認証番号入力画面を開きました（番号はログに出しません）")
                 self._complete_two_factor(page, screenshot_dir)
                 self._wait_logged_in(page, screenshot_dir)
-                context.storage_state(path=str(self.settings.playwright_state_path))
+                self._persist_if_logged_in(page, context)
                 _clear_pending(self.settings)
                 return
 
@@ -477,6 +507,14 @@ class BaseAdminClient:
             self._fail_auth(page, screenshot_dir, wall)
 
         if is_login_page(page.url) or page.get_by_label(re.compile("メールアドレス")).count():
+            if self.settings.playwright_headless:
+                raise NeedsHumanReview(
+                    "BASEログイン",
+                    "保存セッションでは管理画面に入れませんでした。"
+                    " ヘッドレスのパスワードログインは新しい環境扱いになり認証番号が必要です。"
+                    " 先に base-login.bat で画面ログインするか、"
+                    " " + otp_resume_hint(),
+                )
             if not self.settings.base_login_email or not self.settings.base_login_password:
                 raise NeedsHumanReview("BASEログイン", "BASE_LOGIN_EMAIL / BASE_LOGIN_PASSWORD が未設定です。")
             self.logger.info("BASE管理画面へパスワードログインします")
@@ -484,6 +522,7 @@ class BaseAdminClient:
             password = page.get_by_label(re.compile("^パスワード$")).first
             email.fill(self.settings.base_login_email)
             password.fill(self.settings.base_login_password)
+            self._mark_trusted_browser(page)
             self._safe_click(page, page.get_by_role("button", name="ログイン", exact=True).first, "ログイン")
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(1500)
@@ -498,10 +537,25 @@ class BaseAdminClient:
             self._snapshot(page, screenshot_dir / "base-login-failed.png")
             raise NeedsHumanReview("BASEログイン", "パスワードログインに失敗しました。メールアドレスまたはパスワードを確認してください。")
         self._wait_logged_in(page, screenshot_dir)
-        context.storage_state(path=str(self.settings.playwright_state_path))
+        self._persist_if_logged_in(page, context)
+
+    def _wait_for_manual_otp(self, page: Any, *, wait_seconds: int = 600) -> bool:
+        if self.settings.playwright_headless:
+            return False
+        self.logger.info("ブラウザで認証番号を入力してください。最大%s秒待ちます（番号はログに出しません）", wait_seconds)
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            title = ""
+            try:
+                title = page.title()
+            except Exception:
+                title = ""
+            if not is_two_factor_page(page.url, title) and self._already_logged_in(page):
+                return True
+            page.wait_for_timeout(2000)
+        return False
 
     def _handle_two_factor(self, page: Any, context: Any, screenshot_dir: Path) -> None:
-        context.storage_state(path=str(self.settings.playwright_state_path))
         write_json(
             pending_path(self.settings),
             {"purpose": "two_factor", "url": page.url, "saved_at": int(time.time())},
@@ -511,16 +565,19 @@ class BaseAdminClient:
         if self.otp:
             self._complete_two_factor(page, screenshot_dir)
             self._wait_logged_in(page, screenshot_dir)
-            context.storage_state(path=str(self.settings.playwright_state_path))
+            self._persist_if_logged_in(page, context)
+            _clear_pending(self.settings)
+            return
+        if self._wait_for_manual_otp(page):
+            self._wait_logged_in(page, screenshot_dir)
+            self._persist_if_logged_in(page, context)
             _clear_pending(self.settings)
             return
         raise NeedsHumanReview(
             "BASEログイン",
             "BASEがメール認証番号の入力を求めています（新しい環境からのログイン）。"
-            " 認証の回避はしません。"
-            " 届いた6桁を次で渡してください:"
-            " deliver-orders-dry-run.bat --otp 123456"
-            " （番号はログに書きません）",
+            " 認証の回避はしません。 "
+            + otp_resume_hint(),
         )
 
     def _complete_two_factor(self, page: Any, screenshot_dir: Path) -> None:
@@ -537,7 +594,8 @@ class BaseAdminClient:
             self._snapshot(page, screenshot_dir / "base-two-factor-invalid.png")
             raise NeedsHumanReview(
                 "BASEログイン",
-                "認証番号が一致しませんでした。番号は一度限りです。新しい番号で deliver-orders-dry-run.bat --otp を再実行してください。",
+                "認証番号が一致しませんでした。番号は一度限りです。新しい番号で "
+                + otp_resume_hint(),
             )
         wall = self._auth_wall(page)
         if wall and wall != "two_factor":
@@ -929,6 +987,32 @@ class BaseAdminClient:
         if forbidden_control_name(name):
             raise PipelineError("BASE商品登録", f"禁止操作です: {name}")
         locator.click()
+
+    def _mark_trusted_browser(self, page: Any) -> None:
+        patterns = (
+            re.compile("ログインしたまま"),
+            re.compile("このブラウザを記憶"),
+            re.compile("次回から"),
+            re.compile("remember", re.I),
+        )
+        for pattern in patterns:
+            box = page.get_by_label(pattern)
+            if box.count():
+                try:
+                    box.first.check()
+                    self.logger.info("このブラウザを記憶する設定をオンにしました")
+                    return
+                except Exception:
+                    continue
+        try:
+            for loc in page.get_by_role("checkbox").all()[:8]:
+                label = (loc.evaluate("el => (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label') || ''") or "").strip()
+                if any(pat.search(label) for pat in patterns):
+                    loc.check()
+                    self.logger.info("このブラウザを記憶する設定をオンにしました")
+                    return
+        except Exception:
+            return
 
     def _dismiss_noise(self, page: Any) -> None:
         for name in ("閉じる", "スキップ", "後で", "今はしない", "OK"):
