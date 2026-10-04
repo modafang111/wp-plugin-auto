@@ -1,0 +1,65 @@
+{
+  "shop_category_url": "https://123789.theshop.jp/categories/5655306",
+  "items": [
+    {
+      "item_id": "55749997",
+      "title": "WP-Members Membershipの日本語化ファイル",
+      "slug": "wp-members",
+      "protected": true
+    },
+    {
+      "item_id": "55749950",
+      "title": "Duplicate Postの日本語化ファイル",
+      "slug": "duplicate-post",
+      "protected": false
+    },
+    {
+      "item_id": "55749886",
+      "title": "Groupsの日本語化ファイル",
+      "slug": "groups",
+      "protected": false
+    },
+    {
+      "item_id": "55749756",
+      "title": "AnsPress – Question and answerの日本語化ファイル",
+      "slug": "anspress-question-answer",
+      "protected": false
+    },
+    {
+      "item_id": "55746464",
+      "title": "giveの日本語化ファイル",
+      "slug": "give",
+      "protected": false
+    },
+    {
+      "item_id": "55096874",
+      "title": "adminimizeの日本語化ファイル",
+      "slug": "adminimize",
+      "protected": false
+    },
+    {
+      "item_id": "155597804",
+      "title": "Header Footer Code Managerの日本語化ファイル",
+      "slug": "header-footer-code-manager",
+      "protected": false
+    },
+    {
+      "item_id": "155599205",
+      "title": "Hostinger Toolsの日本語化ファイル",
+      "slug": "hostinger",
+      "protected": false
+    },
+    {
+      "item_id": "155636967",
+      "title": "Starter Templates – AI-Powered Templates for Elementor & Gutenbergの日本語化ファイル",
+      "slug": "astra-sites",
+      "protected": false
+    },
+    {
+      "item_id": "155643066",
+      "title": "Complianz GDPR/CCPA Cookie Consent Bannerの日本語化ファイル",
+      "slug": "complianz-gdpr",
+      "protected": false
+    }
+  ]
+}
