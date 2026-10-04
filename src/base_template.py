@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from config import Settings
+from src.listing_copy import listing_values_from_info
 from src.utils import SafeHttp, read_json, write_json
 from src.wordpress import PluginInfo
 
@@ -66,35 +67,24 @@ def listing_title(plugin_name: str, slug: str = "", *, suffix: str = "の日本�
     return title
 
 
-DEFAULT_DESCRIPTION = """■商品について
-本商品は「{plugin_name}」の日本語化ファイルです。
-WordPress公式プラグイン本体は含まれていません。
-公式ディレクトリからプラグイン本体をインストールしたうえで、本日本語化ファイルをご利用ください。
+DEFAULT_DESCRIPTION = """{lead}
 
 ■対象プラグイン
 プラグイン名：{plugin_name}
 対象バージョン：{version}
 公式URL：{official_url}
+{facts}
 
-■概要
+■公式の説明
 {short_description}
 
-■日本語化対象
-管理画面およびプラグインが表示する文字列
+{sample_ui}
 
 ■導入方法
-1. 公式ページから「{plugin_name}」をインストールしてください。
-2. 本商品のZIPを展開し、{po_name} と {mo_name} を次のいずれかに配置します。
-   wp-content/plugins/{slug}/languages/
-   または
-   wp-content/languages/plugins/
-3. サイト言語を日本語に設定してください。
+{install}
 
 ■注意事項
-・本商品は日本語化ファイルです。プラグイン本体ではありません。
-・オリジナルプラグインの著作権は原作者に帰属します。
-・プラグインのアップデートにより、一部の文字列が未翻訳になる場合があります。
-・WordPressおよび原作者とは関係のない第三者による翻訳ファイルです。
+{notes}
 
 ■更新日
 {created}
@@ -285,7 +275,7 @@ class BaseTemplateService:
         quality: dict,
     ) -> dict:
         title = self.render_name(info.name, template, slug=info.slug)
-        detail = strip_listing_text(self.render_description(info, template, package))
+        detail = strip_listing_text(self.render_description(info, template, package, quality))
         identifier = re.sub(r"\s+", "", f"{info.slug}-{info.version}")[:50]
         listing = {
             "title": title,
@@ -317,17 +307,14 @@ class BaseTemplateService:
         suffix = pattern.replace("{plugin_name}", "").replace("{version}", "")
         return listing_title(plugin_name, slug, suffix=suffix, max_len=BASE_TITLE_MAX)
 
-    def render_description(self, info: PluginInfo, template: ProductTemplate, package: dict) -> str:
-        values = {
-            "plugin_name": info.name,
-            "version": info.version,
-            "official_url": info.official_url,
-            "short_description": strip_listing_text(info.short_description or info.description[:180]),
-            "slug": info.slug,
-            "created": package.get("created") or "",
-            "po_name": package.get("po_name") or f"{info.slug}-ja.po",
-            "mo_name": package.get("mo_name") or f"{info.slug}-ja.mo",
-        }
+    def render_description(
+        self,
+        info: PluginInfo,
+        template: ProductTemplate,
+        package: dict,
+        quality: dict | None = None,
+    ) -> str:
+        values = listing_values_from_info(info, package, quality)
         custom = self.settings.data_dir / "templates" / "product_description.txt"
         body = DEFAULT_DESCRIPTION
         if custom.exists():

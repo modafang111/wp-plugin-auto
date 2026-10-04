@@ -24,7 +24,7 @@ function Install-BaseTask {
 $registerTrigger = New-ScheduledTaskTrigger -Daily -At 02:00
 Install-BaseTask 'base-wp-ja-auto-register' (Join-Path $root 'register-next.bat') $registerTrigger
 
-$keepaliveTrigger = New-ScheduledTaskTrigger -Daily -At 01:30
+$keepaliveTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Hours 3) -RepetitionDuration (New-TimeSpan -Days 9999)
 Install-BaseTask 'base-wp-ja-auto-keepalive' (Join-Path $root 'base-keepalive.bat') $keepaliveTrigger
 
 $deliverTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)

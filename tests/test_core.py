@@ -32,13 +32,15 @@ from src.legacy_catalog import (
     LegacyItem,
     latest_zip_for_slug,
     load_legacy_items,
+    merge_registered_jobs,
     slug_for_order,
     structured_product_detail,
 )
+from src.listing_copy import install_block, notes_block, official_description, pick_sample_ui_lines, plugin_job, unique_lead
 from src.mailer import Mailer
 from src.package_builder import IMAGE_KICKER, IMAGE_SUBLINE, PackageBuilder, ascii_overlay
 from src.plugin_analyzer import TranslatableString, decide_already_translated, extract_php_strings
-from src.translation_builder import TranslationBuilder
+from src.translation_builder import TranslationBuilder, sanitize_pot_text
 from src.plugin_discovery import (
     confirm_free_official,
     discover_plugins,
@@ -218,6 +220,34 @@ class CoreTests(unittest.TestCase):
             po_text = Path(catalog["po_path"]).read_text(encoding="utf-8")
             self.assertIn('msgid_plural "%s years"', po_text)
             self.assertIn('msgstr[0] "%s年"', po_text)
+
+    def test_broken_pot_entry_without_msgid_is_skipped(self) -> None:
+        raw = (
+            'msgid ""\n'
+            'msgstr ""\n'
+            "\n"
+            '#: widgets/blog/tpl/offset.php:88\n'
+            'msgctxt "post date"\n'
+            'msgid "Posted on %s"\n'
+            'msgstr ""\n'
+            "\n"
+            "#: widgets/contact/fields/select.class.php:20\n"
+            'msgstr ""\n'
+            "\n"
+            '#: widgets/contact/tpl/default.php:69\n'
+            'msgid "Unable to detect Really Simple CAPTCHA plugin."\n'
+            'msgstr ""\n'
+        )
+        cleaned, dropped = sanitize_pot_text(raw)
+        self.assertEqual(dropped, 1)
+        self.assertNotIn("select.class.php", cleaned)
+        with tempfile.TemporaryDirectory() as tmp:
+            pot = Path(tmp) / "broken.pot"
+            pot.write_text(raw, encoding="utf-8")
+            items = TranslationBuilder(logging.getLogger("test"))._from_pot(pot)
+        msgids = {item.msgid for item in items}
+        self.assertIn("Posted on %s", msgids)
+        self.assertIn("Unable to detect Really Simple CAPTCHA plugin.", msgids)
 
     def test_zip_slip_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -606,7 +636,8 @@ class CoreTests(unittest.TestCase):
             created="2026-08-28",
             settings=settings,
         )
-        self.assertIn("■商品について", detail)
+        self.assertIn("投稿を複製", detail)
+        self.assertIn("■対象プラグイン", detail)
         self.assertIn("■導入方法", detail)
         self.assertIn("■注意事項", detail)
         self.assertIn("Duplicate Post", detail)
@@ -619,12 +650,122 @@ class CoreTests(unittest.TestCase):
             official_url="https://wordpress.org/plugins/duplicate-post/",
             short_description="投稿を複製します。",
             description="投稿を複製します。",
+            tags=["duplicate-post"],
+            requires="6.0",
+            requires_php="7.4",
         )
         listing_detail = BaseTemplateService(settings, logging.getLogger("test")).render_description(
-            info, SimpleNamespace(), {"created": "2026-08-28", "po_name": "duplicate-post-ja.po", "mo_name": "duplicate-post-ja.mo"}
+            info,
+            SimpleNamespace(),
+            {
+                "created": "2026-08-28",
+                "po_name": "duplicate-post-ja.po",
+                "mo_name": "duplicate-post-ja.mo",
+                "sample_ui_lines": ["この投稿を複製", "複製先を選ぶ"],
+            },
+            {"translated_count": 80, "untranslated_count": 2},
         )
         self.assertIn("■導入方法", listing_detail)
+        self.assertIn("この投稿を複製", listing_detail)
+        self.assertIn("翻訳した文字列：80 件", listing_detail)
         self.assertNotIn("オンラインショッピング体験", listing_detail)
+
+    def test_listing_copy_is_unique_per_plugin_without_manual_text(self) -> None:
+        self.assertIn("画像の圧縮", plugin_job("imagify", ["images", "optimization"], "Imagify"))
+        self.assertEqual(plugin_job("duplicate-post", ["duplicate-post"], "Duplicate Post"), "投稿の複製")
+        imagify = unique_lead(
+            plugin_name="Imagify",
+            slug="imagify",
+            job="画像の圧縮",
+            short_description="Optimize images and convert WebP.",
+        )
+        duplicate = unique_lead(
+            plugin_name="Duplicate Post",
+            slug="duplicate-post",
+            job="投稿の複製",
+            short_description="投稿を複製します。",
+        )
+        self.assertIn("画像の圧縮", imagify)
+        self.assertIn("投稿を複製", duplicate)
+        self.assertNotEqual(imagify, duplicate)
+        self.assertNotIn("本商品は「Imagify」の日本語化ファイルです。", imagify)
+
+        samples = pick_sample_ui_lines(
+            [
+                "保存",
+                "画像を一括で最適化",
+                "WebP形式で保存する",
+                "Optimize %s images",
+                "圧縮品質を選ぶ",
+                "https://example.com",
+            ]
+        )
+        self.assertIn("画像を一括で最適化", samples)
+        self.assertIn("WebP形式で保存する", samples)
+        self.assertIn("圧縮品質を選ぶ", samples)
+        self.assertNotIn("保存", samples)
+
+        settings = load_settings()
+        imagify_page = BaseTemplateService(settings, logging.getLogger("test")).render_description(
+            SimpleNamespace(
+                name="Imagify",
+                slug="imagify",
+                version="2.2.6",
+                official_url="https://wordpress.org/plugins/imagify/",
+                short_description="Optimize images on the fly.",
+                description="Optimize images on the fly.",
+                tags=["images", "optimization"],
+                requires="5.8",
+                requires_php="7.4",
+            ),
+            SimpleNamespace(),
+            {
+                "created": "2026-10-04",
+                "po_name": "imagify-ja.po",
+                "mo_name": "imagify-ja.mo",
+                "sample_ui_lines": ["画像を一括で最適化", "圧縮品質を選ぶ"],
+            },
+            {"translated_count": 210, "untranslated_count": 0},
+        )
+        duplicate_page = structured_product_detail(
+            plugin_name="Duplicate Post",
+            slug="duplicate-post",
+            version="4.5",
+            official_url="https://wordpress.org/plugins/duplicate-post/",
+            short_description="投稿を複製します。",
+            created="2026-08-28",
+            settings=settings,
+        )
+        self.assertIn("画像の圧縮", imagify_page)
+        self.assertIn("画像を一括で最適化", imagify_page)
+        self.assertIn("投稿を複製", duplicate_page)
+        self.assertNotEqual(imagify_page.splitlines()[0], duplicate_page.splitlines()[0])
+
+        self.assertEqual(
+            official_description("投稿を複製します。新しい下書きとして開けます。"),
+            "投稿を複製します。 新しい下書きとして開けます。",
+        )
+        self.assertTrue(official_description("Optimize images on the fly.").startswith("Optimize"))
+        fake = SimpleNamespace(translate_official_blurb=lambda text, plugin_name="": "画像をその場で最適化します。")
+        self.assertEqual(
+            official_description("Optimize images on the fly.", translator=fake, plugin_name="Imagify"),
+            "画像をその場で最適化します。",
+        )
+        imagify_notes = notes_block(plugin_name="Imagify", version="2.2.6")
+        give_notes = notes_block(plugin_name="Give", version="4.18.0")
+        self.assertIn("Imagify", imagify_notes)
+        self.assertIn("2.2.6", imagify_notes)
+        self.assertIn("Give", give_notes)
+        self.assertIn("4.18.0", give_notes)
+        self.assertNotEqual(imagify_notes, give_notes)
+        self.assertIn("imagify/languages/", install_block(plugin_name="Imagify", slug="imagify", version="2.2.6"))
+        self.assertIn("give/languages/", install_block(plugin_name="Give", slug="give", version="4.18.0"))
+        merged = merge_registered_jobs(
+            [],
+            [{"base_product_id": "160833739", "plugin_slug": "surerank", "plugin_name": "SureRank"}],
+        )
+        self.assertEqual(merged[0].slug, "surerank")
+        self.assertIn("日本語化ファイル", merged[0].title)
 
         admin = BaseAdminClient(settings, logging.getLogger("test"))
         settings.base_template_product_id = "55749997"

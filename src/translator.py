@@ -103,6 +103,16 @@ GLOSSARY = {
     "WordPress": "WordPress",
 }
 
+BLURB_CONTEXT = "official_blurb"
+BLURB_SYSTEM_PROMPT = """あなたは WordPress.org の公式プラグイン説明を日本語にする翻訳者です。
+ルール:
+- 公式に書かれていることだけを訳す。機能を足さない。宣伝文を新しく作らない。
+- プラグイン名、会社名、固有名詞、単位はそのまま残す。
+- 星評価、絵文字、マーケティング記号は捨てる。
+- 2〜3文、全体で180字以内。
+- 出力は日本語本文のみ。前置きや引用符は付けない。
+"""
+
 SYSTEM_PROMPT = """あなたは WordPress 管理画面の日本語翻訳者です。
 英語の原文を、日本の WordPress 利用者が違和感なく読める管理画面向け日本語に翻訳してください。
 
@@ -183,6 +193,25 @@ class Translator(ABC):
         self.logger.info("AI翻訳終了")
         return results
 
+    def translate_official_blurb(self, text: str, *, plugin_name: str = "") -> str:
+        source = re.sub(r"\s+", " ", (text or "").strip())
+        if not source:
+            return ""
+        if re.search(r"[ぁ-んァ-ン一-龥]", source):
+            return source
+        cached = self.db.cache_get(sha256_text(source), BLURB_CONTEXT, self.name)
+        if cached:
+            return cached
+        translated = self._translate_official_blurb(source, plugin_name=plugin_name)
+        translated = re.sub(r"\s+", " ", (translated or "").strip()).strip("「」\"'")
+        if not translated:
+            return source
+        self.db.cache_put(sha256_text(source), source, BLURB_CONTEXT, translated, self.name)
+        return translated
+
+    def _translate_official_blurb(self, text: str, *, plugin_name: str) -> str:
+        raise NotImplementedError
+
 
 class OpenAITranslator(Translator):
     name = "openai"
@@ -249,6 +278,35 @@ class OpenAITranslator(Translator):
                 delay *= 2
         raise PipelineError("AI翻訳開始", f"OpenAI API が繰り返し失敗しました: {last_error}")
 
+    def _translate_official_blurb(self, text: str, *, plugin_name: str) -> str:
+        if not self.settings.openai_api_key:
+            raise PipelineError("公式説明の翻訳", "OPENAI_API_KEY が未設定です。")
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise PipelineError("公式説明の翻訳", "openai パッケージがインストールされていません。") from exc
+        client = OpenAI(api_key=self.settings.openai_api_key)
+        user = f"プラグイン名: {plugin_name or '(不明)'}\n\n公式説明:\n{text}"
+        delay = 1.0
+        last_error = None
+        for attempt in range(5):
+            try:
+                response = client.chat.completions.create(
+                    model=self.settings.openai_model,
+                    temperature=0.2,
+                    messages=[
+                        {"role": "system", "content": BLURB_SYSTEM_PROMPT},
+                        {"role": "user", "content": user},
+                    ],
+                )
+                return (response.choices[0].message.content or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                self.logger.warning("公式説明の翻訳失敗 (%s回目): %s", attempt + 1, type(exc).__name__)
+                time.sleep(delay)
+                delay *= 2
+        raise PipelineError("公式説明の翻訳", f"OpenAI API が繰り返し失敗しました: {last_error}")
+
 
 class OfflineGlossaryTranslator(Translator):
     """Deterministic fallback for DRY_RUN without API keys. Not for production quality."""
@@ -266,6 +324,9 @@ class OfflineGlossaryTranslator(Translator):
             # Keep placeholders and URLs; translate common UI words inside longer labels.
             out[index] = _soft_glossary_translate(text)
         return out
+
+    def _translate_official_blurb(self, text: str, *, plugin_name: str) -> str:
+        return text
 
 
 def _soft_glossary_translate(text: str) -> str:

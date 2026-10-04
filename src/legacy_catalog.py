@@ -15,7 +15,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from config import Settings
-from src.base_template import DEFAULT_DESCRIPTION
+from src.base_template import DEFAULT_DESCRIPTION, short_plugin_name, strip_listing_text
+from src.listing_copy import listing_values, official_description
 from src.utils import SafeHttp, official_plugin_url, read_json, write_json
 from src.wordpress import WordPressClient
 
@@ -132,24 +133,42 @@ def structured_product_detail(
     created: str = "",
     po_name: str = "",
     mo_name: str = "",
+    tags: list[str] | None = None,
+    requires: str = "",
+    requires_php: str = "",
+    sample_ui_lines: list[str] | None = None,
+    translated_count: int | None = None,
+    untranslated_count: int | None = None,
+    translator: Any | None = None,
     settings: Settings | None = None,
 ) -> str:
-    values = {
-        "plugin_name": plugin_name,
-        "version": version or "(商品ページの対象バージョン)",
-        "official_url": official_url or (official_plugin_url(slug) if slug else ""),
-        "short_description": short_description or f"「{plugin_name}」の管理画面・表示文字列を日本語化します。",
-        "slug": slug or "plugin-slug",
-        "created": created,
-        "po_name": po_name or (f"{slug}-ja.po" if slug else "plugin-ja.po"),
-        "mo_name": mo_name or (f"{slug}-ja.mo" if slug else "plugin-ja.mo"),
-    }
+    short_description = official_description(
+        short_description,
+        translator=translator,
+        plugin_name=plugin_name,
+    )
+    values = listing_values(
+        plugin_name=plugin_name,
+        slug=slug,
+        version=version,
+        official_url=official_url or (official_plugin_url(slug) if slug else ""),
+        short_description=short_description,
+        tags=tags,
+        requires=requires,
+        requires_php=requires_php,
+        created=created,
+        po_name=po_name,
+        mo_name=mo_name,
+        sample_ui_lines=sample_ui_lines,
+        translated_count=translated_count,
+        untranslated_count=untranslated_count,
+    )
     body = DEFAULT_DESCRIPTION
     if settings is not None:
         custom = settings.data_dir / "templates" / "product_description.txt"
         if custom.exists():
             body = custom.read_text(encoding="utf-8")
-    return body.format(**values)
+    return strip_listing_text(body.format(**values))
 
 
 def scan_public_ja_items(settings: Settings, logger: logging.Logger) -> list[tuple[str, str]]:
@@ -160,20 +179,31 @@ def scan_public_ja_items(settings: Settings, logger: logging.Logger) -> list[tup
     host = (urlparse(url).hostname or "").lower()
     try:
         http = SafeHttp(timeout=settings.http_timeout_seconds, extra_hosts={host} if host else None)
-        response = http.request("GET", url, allow_hosts={host} if host else None, allow_redirects=True)
-        response.raise_for_status()
-        body = response.text
     except Exception as exc:  # noqa: BLE001
         logger.warning("公開カテゴリの取得に失敗しました: %s", type(exc).__name__)
         return []
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for match in re.finditer(r"https?://[^/\"']+/items/(\d+)", body):
-        item_id = match.group(1)
-        if item_id in seen:
-            continue
-        seen.add(item_id)
-        found.append((item_id, ""))
+    for page_no in range(1, 8):
+        page_url = url if page_no == 1 else f"{url.rstrip('/')}?page={page_no}"
+        try:
+            response = http.request("GET", page_url, allow_hosts={host} if host else None, allow_redirects=True)
+            response.raise_for_status()
+            body = response.text
+        except Exception as exc:  # noqa: BLE001
+            if page_no == 1:
+                logger.warning("公開カテゴリの取得に失敗しました: %s", type(exc).__name__)
+            break
+        added = 0
+        for match in re.finditer(r"https?://[^/\"']+/items/(\d+)", body):
+            item_id = match.group(1)
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            found.append((item_id, ""))
+            added += 1
+        if added == 0:
+            break
     titles: dict[str, str] = {}
     for item_id, _blank in found:
         item_url = f"{(settings.shop_public_base_url or '').rstrip('/')}/items/{item_id}"
@@ -218,6 +248,40 @@ def merge_scanned_items(known: list[LegacyItem], scanned: list[tuple[str, str]])
     return known + extra
 
 
+def merge_registered_jobs(items: list[LegacyItem], jobs: list[dict[str, Any]]) -> list[LegacyItem]:
+    """Add BASE-registered JA listings from jobs.sqlite3 so recent items are not missed."""
+    by_id = catalog_index(items)
+    extra: list[LegacyItem] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        item_id = str(job.get("base_product_id") or "").strip()
+        slug = str(job.get("plugin_slug") or "").strip().lower()
+        if not item_id or not slug or not item_id.isdigit():
+            continue
+        name = short_plugin_name(str(job.get("plugin_name") or slug), slug)
+        title = f"{name}{JA_TITLE_SUFFIX}"
+        official = str(job.get("wordpress_url") or official_plugin_url(slug))
+        if item_id in by_id:
+            if not by_id[item_id].slug:
+                by_id[item_id].slug = slug
+            if not by_id[item_id].title:
+                by_id[item_id].title = title
+            if not by_id[item_id].wordpress_url:
+                by_id[item_id].wordpress_url = official
+            continue
+        extra.append(
+            LegacyItem(
+                item_id=item_id,
+                title=title,
+                slug=slug,
+                protected=False,
+                wordpress_url=official,
+            )
+        )
+    return items + extra
+
+
 def write_delivery_map(settings: Settings, items: list[LegacyItem], output_dir: Path) -> dict[str, Any]:
     mapping: dict[str, Any] = {}
     missing: list[str] = []
@@ -240,18 +304,29 @@ def write_delivery_map(settings: Settings, items: list[LegacyItem], output_dir: 
     return {"mapping": mapping, "missing": missing}
 
 
-def detail_for_item(item: LegacyItem, wp: WordPressClient | None, settings: Settings) -> str:
+def detail_for_item(
+    item: LegacyItem,
+    wp: WordPressClient | None,
+    settings: Settings,
+    translator: Any | None = None,
+) -> str:
     version = ""
     short = ""
     official = item.wordpress_url or (official_plugin_url(item.slug) if item.slug else "")
     name = item.plugin_name()
+    tags: list[str] = []
+    requires = ""
+    requires_php = ""
     if wp and item.slug:
         try:
             info = wp.fetch_plugin(item.slug)
             version = info.version
             short = info.short_description or info.description[:180]
             official = info.official_url
-            name = info.name
+            name = short_plugin_name(info.name, info.slug)
+            tags = list(info.tags or [])
+            requires = info.requires or ""
+            requires_php = info.requires_php or ""
         except Exception:
             pass
     zip_path = latest_zip_for_slug(settings.output_dir, item.slug) if item.slug else None
@@ -260,14 +335,20 @@ def detail_for_item(item: LegacyItem, wp: WordPressClient | None, settings: Sett
     mo_name = f"{item.slug}-ja.mo" if item.slug else ""
     if zip_path is not None:
         created = datetime.fromtimestamp(zip_path.stat().st_mtime).strftime("%Y-%m-%d")
-    return structured_product_detail(
-        plugin_name=name,
-        slug=item.slug,
-        version=version,
-        official_url=official,
-        short_description=short,
-        created=created,
-        po_name=po_name,
-        mo_name=mo_name,
-        settings=settings,
+    return strip_listing_text(
+        structured_product_detail(
+            plugin_name=name,
+            slug=item.slug,
+            version=version,
+            official_url=official,
+            short_description=short,
+            created=created,
+            po_name=po_name,
+            mo_name=mo_name,
+            tags=tags,
+            requires=requires,
+            requires_php=requires_php,
+            translator=translator,
+            settings=settings,
+        )
     )

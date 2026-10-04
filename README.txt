@@ -87,7 +87,7 @@ Windows では次のバッチをダブルクリックしてもよい。
   test-mail.bat                 自分宛てにメール設定テスト
   base-login.bat                BASE管理画面へ画面付きログイン（セッション再作成）
   base-keepalive.bat            保存セッションの更新（認証番号は使わない）
-  schedule-keepalive.bat        毎日 01:30 にセッション更新タスクを作る
+  schedule-keepalive.bat        3時間おきのセッション更新タスクを作る
   test-deliver.bat              自分宛てにZIP付きお届けテスト
   deliver-orders-dry-run.bat    未対応注文の確認（送らない）。初回BASEログイン
   deliver-orders.bat            売れたZIPを購入者へ送る（タスク スケジューラ用）
@@ -192,9 +192,10 @@ BASE登録のみ（翻訳成果物がある前提）:
 
   認証番号の回避はしない。代わりに保存セッションを使い続け、切れる前に更新する。
   - 朝の登録は先に --base-keepalive で生存確認する
-  - 毎日 01:30 に base-keepalive.bat（schedule-keepalive.bat で作成）
-  - お届け処理（5分おき）でもクッキーを更新する
-  - 切れたときは base-login.bat。ヘッドレスでパスワード再ログインはしない
+  - 管理画面クッキーはセッションcookieで、約12時間触らないとサーバ側で切れる
+  - 3時間おきに base-keepalive.bat（schedule-keepalive.bat で作成）
+  - 切れたときは、同じPCの信頼済み Chrome プロファイルでパスワード再ログインを自動で試す
+  - 認証番号が出たときだけ base-login.bat。番号の回避はしない
 
 新しい環境からのログインでメール認証番号を求められた場合:
 
@@ -305,8 +306,10 @@ Playwright:
      PRODUCT_NAME_PATTERN={plugin_name} WordPressプラグイン 日本語化ファイル
      PRODUCT_PRICE=500
 
-テンプレート説明文がある場合、改行と構成は維持し、プラグイン名 / バージョン /
-公式URL だけ差し替える。AIでセールスコピーを作り直さない。
+説明文の骨格（導入・注意）は共通のままにする。1行目と用途・公式説明・
+翻訳済み文言の例は、公式APIと今回の翻訳結果から自動で差し替える。
+公式説明が英語のときは、既存の翻訳器で公式の内容だけ日本語にする。
+手書きの商品説明や、AIによる宣伝文の作り直しはしない。
 
 価格・カテゴリ・在庫はテンプレート値を優先。未取得時は PRODUCT_PRICE 等。
 

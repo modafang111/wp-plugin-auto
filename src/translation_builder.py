@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import subprocess
+import tempfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,37 @@ from src.exceptions import PipelineError
 from src.plugin_analyzer import TranslatableString, extract_strings, strings_to_jsonable
 from src.utils import html_attr_urls, html_tag_names, looks_like_url, placeholder_tokens, repair_html_markup, repair_placeholders, write_json
 from src.wordpress import PluginInfo
+
+
+def sanitize_pot_text(text: str) -> tuple[str, int]:
+    """Drop gettext entries that have msgstr without msgid (broken upstream .pot)."""
+    out: list[str] = []
+    entry: list[str] = []
+    has_msgid = False
+    dropped = 0
+
+    def flush() -> None:
+        nonlocal dropped, has_msgid
+        if not entry:
+            return
+        if has_msgid:
+            out.extend(entry)
+        else:
+            dropped += 1
+        entry.clear()
+        has_msgid = False
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            out.append(line)
+            continue
+        if stripped.startswith("msgid ") or stripped.startswith("msgid\t"):
+            has_msgid = True
+        entry.append(line)
+    flush()
+    return "".join(out), dropped
 
 
 class QualityReport:
@@ -51,7 +83,10 @@ class TranslationBuilder:
     def collect_strings(self, plugin_root: Path, text_domain: str, pot_path: str) -> list[TranslatableString]:
         if pot_path and Path(pot_path).exists():
             self.logger.info("翻訳対象抽出: 同梱 .pot を優先します (%s)", pot_path)
-            return self._from_pot(Path(pot_path))
+            try:
+                return self._from_pot(Path(pot_path))
+            except OSError as exc:
+                self.logger.warning("同梱 .pot を読めないため PHP/JS スキャンに切り替えます: %s", exc)
         wp_pot = self._try_wp_cli(plugin_root, text_domain)
         if wp_pot:
             self.logger.info("翻訳対象抽出: WP-CLI i18n make-pot を使用しました")
@@ -60,7 +95,17 @@ class TranslationBuilder:
         return extract_strings(plugin_root, text_domain)
 
     def _from_pot(self, path: Path) -> list[TranslatableString]:
-        po = polib.pofile(str(path))
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        cleaned, dropped = sanitize_pot_text(raw)
+        if dropped:
+            self.logger.warning("同梱 .pot の壊れたエントリを %s 件スキップしました", dropped)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".pot", delete=False) as tmp:
+            tmp.write(cleaned)
+            tmp_path = Path(tmp.name)
+        try:
+            po = polib.pofile(str(tmp_path))
+        finally:
+            tmp_path.unlink(missing_ok=True)
         items: list[TranslatableString] = []
         for entry in po:
             if entry.obsolete or not entry.msgid:

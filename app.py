@@ -19,9 +19,11 @@ from src.database import Database
 from src.exceptions import NeedsHumanReview, PipelineError, SkipPlugin
 from src.logger import log_exception, setup_logger
 from src.legacy_catalog import (
+    JA_TITLE_SUFFIX,
     detail_for_item,
     latest_zip_for_slug,
     load_legacy_items,
+    merge_registered_jobs,
     merge_scanned_items,
     scan_public_ja_items,
     write_delivery_map,
@@ -34,6 +36,7 @@ from src.plugin_downloader import PluginDownloader
 from src.plugin_discovery import confirm_free_official, discover_plugins, import_discovered_txt
 from src.translation_builder import TranslationBuilder, dump_strings
 from src.translator import get_translator, load_extra_glossary
+from src.listing_copy import official_description, pick_sample_ui_lines
 from src.utils import SafeHttp, extract_plugin_slug, official_plugin_url, read_json, write_json
 from src.wordpress import PluginInfo, WordPressClient
 
@@ -493,17 +496,16 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
 
         translations_path = translation_dir / "translations.json"
         translations: list[str] = []
+        translator = get_translator(settings, db, logger)
         if args.base_only and translations_path.exists():
             translations = [row.get("msgstr") or "" for row in (read_json(translations_path, []) or [])]
         elif not should_skip(job, "translated", args) or not translations_path.exists():
-            translator = get_translator(settings, db, logger)
             translations = translator.translate_all(items)
             translation_dir.mkdir(parents=True, exist_ok=True)
             db.upsert_job(info.slug, info.version, status="translated", stage="translated", translation_date=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
         else:
             translations = [row.get("msgstr") or "" for row in (read_json(translations_path, []) or [])]
             if len(translations) != len(items):
-                translator = get_translator(settings, db, logger)
                 translations = translator.translate_all(items)
 
         quality = builder.quality_check(items, translations)
@@ -522,6 +524,12 @@ def process_one(url: str, args: argparse.Namespace, settings: Settings) -> int:
             work,
             analysis.plugin_root,
             analysis.license,
+        )
+        package["sample_ui_lines"] = pick_sample_ui_lines(translations)
+        package["official_blurb_ja"] = official_description(
+            info.short_description or info.description[:400],
+            translator=translator,
+            plugin_name=info.name,
         )
         db.upsert_job(info.slug, info.version, status="packaged", stage="packaged", output_zip=package["output_zip"])
 
@@ -905,10 +913,13 @@ def run_sync_legacy(
     logger.info("テンプレート商品 %s はお届け対象です。商品ページは編集しません", template_id or "(未設定)")
 
     items = load_legacy_items(settings)
+    db = Database(settings.db_path)
     scanned = scan_public_ja_items(settings, logger)
     if scanned:
         logger.info("公開カテゴリから日本語化商品を %s 件確認しました", len(scanned))
         items = merge_scanned_items(items, scanned)
+    items = merge_registered_jobs(items, db.all_jobs_with_products())
+    logger.info("日本語化商品の対象: %s 件", len(items))
     unmapped = [item for item in items if not item.slug]
     if unmapped:
         unknown_path = settings.output_dir / "legacy-preview" / "unmapped.json"
@@ -957,10 +968,18 @@ def run_sync_legacy(
     preview_dir = settings.output_dir / "legacy-preview"
     preview_dir.mkdir(parents=True, exist_ok=True)
     wp = WordPressClient(SafeHttp(timeout=settings.http_timeout_seconds))
+    try:
+        translator = get_translator(settings, db, logger)
+    except Exception:
+        translator = None
+        logger.warning("公式説明の日本語化をスキップします。OPENAI_API_KEY を確認してください。")
     listings: list[tuple[object, dict]] = []
     for item in items:
-        detail = detail_for_item(item, wp, settings)
-        title = item.title or f"{item.plugin_name()}の日本語化ファイル"
+        title = item.title or f"{item.plugin_name()}{JA_TITLE_SUFFIX}"
+        if JA_TITLE_SUFFIX not in title:
+            logger.info("日本語化ファイルではないため対象外: %s %s", item.item_id, title)
+            continue
+        detail = detail_for_item(item, wp, settings, translator=translator)
         listing = {
             "title": title,
             "detail": detail,
@@ -973,10 +992,15 @@ def run_sync_legacy(
         write_json(preview_dir / f"{stem}.json", listing)
         (preview_dir / f"{stem}.txt").write_text(detail, encoding="utf-8")
         logger.info("説明プレビュー: %s", preview_dir / f"{stem}.txt")
+    db.close()
 
     rewritten = 0
     skipped_protected = 0
+    skipped_done = 0
     rewrite_failed = 0
+    rewritten_path = preview_dir / "rewritten.json"
+    already = {str(x) for x in (read_json(rewritten_path, []) or []) if x}
+    gone = {str(x) for x in (read_json(preview_dir / "gone.json", []) or []) if x}
     if rewrite_pages:
         logger.info("テンプレート以外の過去商品ページを新書式へ更新します（削除はしません）")
         admin = BaseAdminClient(settings, logger, otp=otp)
@@ -988,9 +1012,26 @@ def run_sync_legacy(
                         skipped_protected += 1
                         logger.info("テンプレートのためページ更新をスキップ: %s", item.item_id)
                         continue
+                    if JA_TITLE_SUFFIX not in (listing.get("title") or item.title or ""):
+                        logger.info("日本語化ファイルではないため更新しません: %s", item.item_id)
+                        continue
+                    if not item.slug:
+                        rewrite_failed += 1
+                        logger.error("slug 不明のため更新しません: %s %s", item.item_id, item.title)
+                        continue
+                    if item.item_id in already:
+                        skipped_done += 1
+                        logger.info("新書式済みのためスキップ: %s", item.item_id)
+                        continue
+                    if item.item_id in gone:
+                        skipped_done += 1
+                        logger.info("公開ページが無いためスキップ: %s", item.item_id)
+                        continue
                     try:
                         admin.apply_item_copy(page, item.item_id, listing, screenshot_dir / item.item_id)
                         rewritten += 1
+                        already.add(item.item_id)
+                        write_json(rewritten_path, sorted(already))
                     except (PipelineError, NeedsHumanReview) as exc:
                         rewrite_failed += 1
                         logger.error("ページ更新失敗 %s: %s", item.item_id, exc.message)
@@ -1000,11 +1041,12 @@ def run_sync_legacy(
             return 1
 
     logger.info(
-        "完了: items=%s zip不足=%s ページ更新=%s テンプレートスキップ=%s 更新失敗=%s ログ=%s",
+        "完了: items=%s zip不足=%s ページ更新=%s テンプレートスキップ=%s 新書式済みスキップ=%s 更新失敗=%s ログ=%s",
         len(items),
         len(missing),
         rewritten,
         skipped_protected,
+        skipped_done,
         rewrite_failed,
         log_path,
     )
@@ -1043,6 +1085,23 @@ def run_deliver_orders(settings: Settings, *, dry_run: bool, watch: bool, otp: s
         return 1 if counts["failed"] else 0
     except NeedsHumanReview as exc:
         logger.error("要確認 (%s): %s", exc.stage, exc.message)
+        if "保存セッションでは" in exc.message or "管理画面に入れません" in exc.message:
+            logger.warning("保存セッションが切れたため、信頼済みブラウザで再ログインします")
+            try:
+                service.admin.reestablish_with_trusted_profile(settings.screenshots_dir / "deliver-orders" / "relogin")
+                counts = service.run_once(dry_run=dry_run)
+                logger.info(
+                    "お届け結果: orders=%s sent=%s skipped=%s failed=%s",
+                    counts["orders"],
+                    counts["sent"],
+                    counts["skipped"],
+                    counts["failed"],
+                )
+                return 1 if counts["failed"] else 0
+            except NeedsHumanReview as exc2:
+                logger.error("要確認 (%s): %s", exc2.stage, exc2.message)
+                _notify_session_problem(settings, mailer, logger, exc2.message)
+                return 1
         _notify_session_problem(settings, mailer, logger, exc.message)
         return 1
     except PipelineError as exc:
@@ -1080,10 +1139,20 @@ def run_base_keepalive(settings: Settings) -> int:
         with admin.logged_in_page(screenshot_dir):
             logger.info("BASEセッションを更新しました")
     except NeedsHumanReview as exc:
-        logger.error("要確認 (%s): %s", exc.stage, exc.message)
-        logger.error("ログ: %s", log_path)
-        _notify_session_problem(settings, mailer, logger, exc.message)
-        return 1
+        if "保存セッションでは" not in exc.message and "管理画面に入れません" not in exc.message:
+            logger.error("要確認 (%s): %s", exc.stage, exc.message)
+            logger.error("ログ: %s", log_path)
+            _notify_session_problem(settings, mailer, logger, exc.message)
+            return 1
+        logger.warning("保存セッションが切れたため、信頼済みブラウザで再ログインします")
+        try:
+            admin.reestablish_with_trusted_profile(screenshot_dir / "relogin")
+            logger.info("BASEセッションを更新しました")
+        except NeedsHumanReview as exc2:
+            logger.error("要確認 (%s): %s", exc2.stage, exc2.message)
+            logger.error("ログ: %s", log_path)
+            _notify_session_problem(settings, mailer, logger, exc2.message)
+            return 1
     except PipelineError as exc:
         logger.error("エラー (%s): %s", exc.stage, exc.message)
         return 1

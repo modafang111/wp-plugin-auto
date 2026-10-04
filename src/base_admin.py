@@ -138,10 +138,12 @@ def pending_path(settings: Settings) -> Path:
 
 
 class BaseAdminClient:
-    def __init__(self, settings: Settings, logger: logging.Logger, *, otp: str = "") -> None:
+    def __init__(self, settings: Settings, logger: logging.Logger, *, otp: str = "", wait_for_otp: bool = True) -> None:
         self.settings = settings
         self.logger = logger
         self.otp = (otp or "").strip()
+        self.wait_for_otp = wait_for_otp
+        self.hide_browser = False
 
     @contextmanager
     def _open_context(self, stage: str = "BASEログイン") -> Iterator[tuple[Any, Any]]:
@@ -162,6 +164,8 @@ class BaseAdminClient:
             "user_agent": PLAYWRIGHT_USER_AGENT,
             "args": ["--disable-dev-shm-usage"],
         }
+        if self.hide_browser:
+            shared["args"] = [*shared["args"], "--start-minimized"]
         with sync_playwright() as p:
             browser = None
             if self.settings.playwright_headless:
@@ -201,6 +205,32 @@ class BaseAdminClient:
                 mark_session_ok(self.settings)
         except Exception:
             return
+
+    def reestablish_with_trusted_profile(self, screenshot_dir: Path) -> None:
+        """Reuse the headed Chrome profile and password. Does not bypass OTP."""
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        previous_headless = self.settings.playwright_headless
+        previous_wait = self.wait_for_otp
+        previous_hide = self.hide_browser
+        self.settings.playwright_headless = False
+        self.wait_for_otp = False
+        self.hide_browser = True
+        try:
+            with self._open_context("BASEログイン") as (page, context):
+                self._login_or_resume(page, context, screenshot_dir, {})
+                if not self._already_logged_in(page):
+                    raise NeedsHumanReview(
+                        "BASEログイン",
+                        "信頼済みブラウザでも管理画面に入れませんでした。 "
+                        + otp_resume_hint(),
+                    )
+                self._persist_if_logged_in(page, context)
+                _clear_pending(self.settings)
+                self.logger.info("信頼済みブラウザでセッションを復旧しました")
+        finally:
+            self.settings.playwright_headless = previous_headless
+            self.wait_for_otp = previous_wait
+            self.hide_browser = previous_hide
 
     @contextmanager
     def logged_in_page(self, screenshot_dir: Path) -> Iterator[Any]:
@@ -290,33 +320,50 @@ class BaseAdminClient:
         from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
         pending = _read_pending(self.settings)
-        with self._open_context("BASE商品登録") as (page, context):
-            try:
-                self._login_or_resume(page, context, screenshot_dir, pending)
-                self._guard_template(page.url, template_id)
-                created = self._create_item_once(page, listing, zip_path, screenshot_dir, template_id)
-                if created is None and self._recover_session(page, context, screenshot_dir):
+        last_review: NeedsHumanReview | None = None
+        for attempt in range(1, 3):
+            with self._open_context("BASE商品登録") as (page, context):
+                try:
+                    self._login_or_resume(page, context, screenshot_dir, pending)
+                    try:
+                        self.list_order_summaries(page, limit=1)
+                    except Exception:
+                        pass
+                    self._guard_template(page.url, template_id)
                     created = self._create_item_once(page, listing, zip_path, screenshot_dir, template_id)
-                if created is None:
-                    raise NeedsHumanReview(
-                        "BASE商品登録",
-                        "登録ボタンを押したあと新規登録画面のままです。必須項目不足の可能性があります。削除はしていません。",
+                    if created is None and self._recover_session(page, context, screenshot_dir):
+                        created = self._create_item_once(page, listing, zip_path, screenshot_dir, template_id)
+                    if created is None:
+                        raise NeedsHumanReview(
+                            "BASE商品登録",
+                            "登録ボタンを押したあと新規登録画面のままです。必須項目不足の可能性があります。削除はしていません。",
+                        )
+                    self._persist_if_logged_in(page, context)
+                    _clear_pending(self.settings)
+                    self.logger.info(
+                        "BASE管理画面で商品を登録: item_id=%s visible=%s url=%s",
+                        created.get("item_id"),
+                        listing.get("visible"),
+                        created.get("product_url") or created.get("admin_url"),
                     )
-                self._persist_if_logged_in(page, context)
-                _clear_pending(self.settings)
-                self.logger.info(
-                    "BASE管理画面で商品を登録: item_id=%s visible=%s url=%s",
-                    created.get("item_id"),
-                    listing.get("visible"),
-                    created.get("product_url") or created.get("admin_url"),
-                )
-                return created
-            except NeedsHumanReview:
-                self._snapshot(page, screenshot_dir / "base-needs-review.png")
-                raise
-            except PlaywrightTimeout as exc:
-                self._snapshot(page, screenshot_dir / "base-timeout.png")
-                raise NeedsHumanReview("BASE商品登録", f"管理画面の操作が時間切れです。画面構成が変わった可能性があります。 {exc}") from exc
+                    return created
+                except NeedsHumanReview as exc:
+                    last_review = exc
+                    self._snapshot(page, screenshot_dir / "base-needs-review.png")
+                    if attempt == 1 and "保存セッションでは" in exc.message:
+                        self.logger.warning("保存セッションが切れたため、信頼済みブラウザで再ログインします")
+                        self.reestablish_with_trusted_profile(screenshot_dir / "relogin")
+                        continue
+                    if attempt == 1 and self._session_expired(page):
+                        self.logger.warning("操作タイムアウトのためブラウザを開き直して登録を再試行します")
+                        continue
+                    raise
+                except PlaywrightTimeout as exc:
+                    self._snapshot(page, screenshot_dir / "base-timeout.png")
+                    raise NeedsHumanReview("BASE商品登録", f"管理画面の操作が時間切れです。画面構成が変わった可能性があります。 {exc}") from exc
+        if last_review:
+            raise last_review
+        raise NeedsHumanReview("BASE商品登録", "商品登録を完了できませんでした。削除はしていません。")
 
     def replace_item_image(self, item_id: str, image_path: Path, screenshot_dir: Path) -> None:
         template_id = str(self.settings.base_template_product_id or "")
@@ -392,21 +439,29 @@ class BaseAdminClient:
         self._guard_template(page.url, template_id)
         if str(item_id) not in page.url:
             raise PipelineError("BASE商品更新", f"指定した商品の編集画面ではありません: {page.url}")
-        detail = listing.get("detail") or ""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+        detail = strip_listing_text(listing.get("detail") or "")
+        listing["detail"] = detail
         title = listing.get("title") or ""
+        if len(title) > BASE_TITLE_MAX:
+            title = listing_title(str(listing.get("plugin_name") or title), str(listing.get("slug") or ""))
         if title:
             name = page.locator("#itemDetail_name")
             if name.count():
-                name.first.fill(title)
+                name.first.fill(title[:BASE_TITLE_MAX])
             else:
-                _fill_by_labels(page, ["商品名"], title)
+                _fill_by_labels(page, ["商品名"], title[:BASE_TITLE_MAX])
         if page.locator("#itemDetail_detail").count():
-            page.locator("#itemDetail_detail").first.fill(detail)
+            box = page.locator("#itemDetail_detail").first
+            box.fill(detail)
+            box.dispatch_event("input")
         elif not _fill_by_labels(page, ["商品説明"], detail):
             if page.locator("textarea").count():
                 page.locator("textarea").first.fill(detail)
             else:
-                raise NeedsHumanReview("BASE商品更新", "商品説明の入力欄が見つかりません。")
+                raise PipelineError("BASE商品更新", "商品説明の入力欄が見つかりません。")
+        page.wait_for_timeout(800)
         save = _first_existing(
             page,
             [
@@ -415,9 +470,16 @@ class BaseAdminClient:
             ],
         )
         if save is None:
-            raise NeedsHumanReview("BASE商品更新", "「変更を保存」が見つかりません。削除は押しません。")
-        self._safe_click(page, save, "変更を保存")
-        page.wait_for_timeout(2500)
+            raise PipelineError("BASE商品更新", "「変更を保存」が見つかりません。削除は押しません。")
+        try:
+            if save.first.is_disabled():
+                self._snapshot(page, screenshot_dir / f"base-copy-disabled-{item_id}.png")
+                raise PipelineError("BASE商品更新", "「変更を保存」が無効のままです。商品名か説明文を確認してください。")
+            self._safe_click(page, save, "変更を保存")
+            page.wait_for_timeout(2500)
+        except PlaywrightTimeout as exc:
+            self._snapshot(page, screenshot_dir / f"base-copy-timeout-{item_id}.png")
+            raise PipelineError("BASE商品更新", f"保存操作が時間切れです。 {exc}") from exc
         self._guard_template(page.url, template_id)
         self._snapshot(page, screenshot_dir / f"base-copy-updated-{item_id}.png")
         self.logger.info("商品説明を更新しました: item_id=%s", item_id)
@@ -445,6 +507,8 @@ class BaseAdminClient:
 
     def _session_expired(self, page: Any) -> bool:
         try:
+            if page.get_by_text("しばらく操作されなかった").count():
+                return True
             if page.get_by_text("再度ログインしてください").count():
                 return True
             if page.get_by_role("button", name="再度ログインする").count():
@@ -454,19 +518,16 @@ class BaseAdminClient:
         return False
 
     def _recover_session(self, page: Any, context: Any, screenshot_dir: Path) -> bool:
-        self.logger.warning("BASEセッションが切れたため再ログインします")
-        btn = page.get_by_role("button", name="再度ログインする")
-        if btn.count():
-            try:
-                btn.first.click(timeout=3000)
-            except Exception:
-                pass
-            page.wait_for_timeout(1000)
+        self.logger.warning("BASEの操作タイムアウトのため、保存セッションで商品一覧へ戻ります")
         try:
-            self._login_or_resume(page, context, screenshot_dir, {})
-        except NeedsHumanReview:
-            return False
-        return self._already_logged_in(page)
+            page.goto(ITEMS_LIST_URL, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            page.wait_for_timeout(1000)
+        if self._already_logged_in(page):
+            self._persist_if_logged_in(page, context)
+            return True
+        return False
 
     def _login_or_resume(self, page: Any, context: Any, screenshot_dir: Path, pending: dict[str, Any]) -> None:
         page.goto(ITEMS_LIST_URL, wait_until="domcontentloaded", timeout=45000)
@@ -568,7 +629,7 @@ class BaseAdminClient:
             self._persist_if_logged_in(page, context)
             _clear_pending(self.settings)
             return
-        if self._wait_for_manual_otp(page):
+        if self.wait_for_otp and self._wait_for_manual_otp(page):
             self._wait_logged_in(page, screenshot_dir)
             self._persist_if_logged_in(page, context)
             _clear_pending(self.settings)
